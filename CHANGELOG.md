@@ -2,6 +2,12 @@
 
 All notable changes to MonitorKit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, a minor version may change the public API; every such change is listed under **Changed** or **Removed**.
 
+## [0.1.1] - 2026-10-24
+
+### Fixed
+
+- The package and its tests compile with Xcode 26.0.1 and 26.6 (Swift 6.2 and 6.3). Those compilers gave up type-checking the waveform and chroma graticule tick builders (`WaveformScale.ticks`, `chromaTicks`) and three test expressions. Behaviour is unchanged.
+
 ## [0.1.0] - 2026-10-24
 
 The first public release.
@@ -44,4 +50,5 @@ UI (`MonitorKitUI`):
 
 Documentation: README, FEATURES, API, INTEGRATION, ARCHITECTURE and MATH (every constant with its source and the test that checks it).
 
+[0.1.1]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.1
 [0.1.0]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.0

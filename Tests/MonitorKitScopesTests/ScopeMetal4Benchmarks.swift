@@ -49,7 +49,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
         try interleaved(
           m, classic: { cb in try classic.accumulate(frame.frame, burnInLUT: nil, monitorLUT: nil, into: cb) },
           metal4: { s in try a.accumulate(frame.frame, burnInLUT: nil, monitorLUT: nil, into: s) })
-      } until: { $0.metal4 < $0.classic * 1.25 + 0.03 }
+      } until: { (r) -> Bool in r.metal4 < r.classic * 1.25 + 0.03 }
       report.append(String(format: "  %@: %.3f / %.3f", name, t.classic, t.metal4))
       XCTAssertLessThan(t.metal4, t.classic * 1.25 + 0.03, "\(name): Metal 4 within noise of classic")
     }
@@ -70,7 +70,10 @@ final class ScopeMetal4Benchmarks: XCTestCase {
         try interleaved(
           m, classic: { cb in try classic.accumulate(frame.frame, burnInLUT: lut, monitorLUT: nil, into: cb) },
           metal4: { s in try g.accumulate(frame.frame, burnInLUT: lut, monitorLUT: nil, into: s) })
-      } until: { $0.metal4 < 1 && $0.metal4 < $0.classic * 1.25 + 0.03 }
+      } until: { (r) -> Bool in
+        let budget: Double = min(1.0, r.classic * 1.25 + 0.03)
+        return r.metal4 < budget
+      }
       XCTAssertEqual(g.fusedMemberCount, 3)
       report.append(
         String(format: "  fused RGB parade + vectorscope + histogram, %@ stage: %.3f / %.3f", "\(stage)", t.classic, t.metal4))
@@ -94,7 +97,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
         try interleaved(
           m, classic: { cb in try classic.render(a, target: target, clear: true, into: cb) },
           metal4: { s in try r.render(a, target: target, clear: true, into: s) })
-      } until: { $0.metal4 < $0.classic * 1.25 + 0.02 }
+      } until: { (r) -> Bool in r.metal4 < r.classic * 1.25 + 0.02 }
       // A new trace every draw (a display change), as after each accumulation.
       var display = a.settings.display, flip = false
       func next() -> ScopeDisplay {
@@ -106,7 +109,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
         try interleaved(
           m, classic: { cb in try classic.render(a, display: next(), target: target, clear: true, into: cb) },
           metal4: { s in try r.render(a, display: next(), target: target, clear: true, into: s) })
-      } until: { $0.metal4 < $0.classic * 1.25 + 0.02 }
+      } until: { (r) -> Bool in r.metal4 < r.classic * 1.25 + 0.02 }
       report.append(
         String(
           format: "  %@: draw %.3f / %.3f; resolve + draw %.3f / %.3f", name, draw.classic, draw.metal4,
@@ -128,7 +131,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
         pq: try interleaved(m, classic: { _ in }, metal4: { s in try pq.render(a, target: edr, clear: true, into: s) })
           .metal4
       )
-    } until: { $0.pq < $0.sdr * 1.5 + 0.02 }
+    } until: { (r) -> Bool in r.pq < r.sdr * 1.5 + 0.02 }
     report.append(String(format: "  RGB parade into rgba16Float, Metal 4: SDR layer %.3f, PQ BT.2020 %.3f", pair.sdr, pair.pq))
     XCTAssertLessThan(pair.pq, pair.sdr * 1.5 + 0.02, "the PQ encode is cheap")
     print(report.joined(separator: "\n"))
@@ -165,7 +168,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
           format: "BENCH Metal 4 CPU encode (debug build): accumulate min %.1f / median %.1f µs, render (resolve + draw) min %.1f / median %.1f µs",
           accumulate[0], accumulate[accumulate.count / 2], render[0], render[render.count / 2]))
       return (accumulate[0], render[0])
-    } until: { $0.accumulate < 60 && $0.render < 60 }
+    } until: { (r) -> Bool in max(r.accumulate, r.render) < 60.0 }
     XCTAssertLessThan(t.accumulate, 60)
     XCTAssertLessThan(t.render, 60)
   }

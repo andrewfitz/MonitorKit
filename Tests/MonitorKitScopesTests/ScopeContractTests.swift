@@ -194,7 +194,7 @@ final class ScopeContractTests: XCTestCase {
           format: "CPU encode (debug build): accumulate min %.1f / median %.1f µs, render min %.1f / median %.1f µs",
           accumulate[0], accumulate[accumulate.count / 2], render[0], render[render.count / 2]))
       return (accumulate[0], render[0])
-    } until: { $0.accumulate < 60 && $0.render < 60 }
+    } until: { (r) -> Bool in max(r.accumulate, r.render) < 60.0 }
     // The release bar is 30 µs per pass; a debug build under load gets slack.
     XCTAssertLessThan(t.accumulate, 60)
     XCTAssertLessThan(t.render, 60)

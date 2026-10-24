@@ -83,7 +83,8 @@ final class IntegrationRegressionTests: XCTestCase {
     var focus = FocusSettings()
     focus.enabled = true
     try gpu.run { cb in try feed.analyze(frame, focus: focus, into: cb) }
-    weak let mask = feed.focusMask
+    weak var mask: (any MTLTexture)?
+    mask = feed.focusMask
     let bytes = try XCTUnwrap(mask).allocatedSize
     XCTAssertEqual(feed.retiredMemoryBytes, 0)
     try gpu.run { cb in try feed.analyze(frame, focus: FocusSettings(), into: cb) }

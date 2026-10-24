@@ -148,7 +148,11 @@ final class RealtimeTests: XCTestCase {
     let meter = try AudioMeter(sampleRate: fs, channelCount: channels)
     let blocks = 3000
     let done = Atomic<Bool>(false)
-    let source = (0..<(blockFrames * 64)).map { i in Float(0.9 * sin(Double(i) * 0.05) * (0.5 + 0.5 * sin(Double(i) * 0.0003))) }
+    let source = (0..<(blockFrames * 64)).map { (i: Int) -> Float in
+      let x = Double(i)
+      let envelope: Double = 0.5 + 0.5 * sin(x * 0.0003)
+      return Float(0.9 * sin(x * 0.05) * envelope)
+    }
 
     let writer = Thread {
       let block = PlanarBlock(channelCount: channels, capacity: blockFrames)

@@ -45,7 +45,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
     var report = ["BENCH 4K v210 accumulation, GPU ms (min of 15 × 10, interleaved), classic / Metal 4:"]
     for (name, settings) in ScopeBenchmarkTests.scopes {
       let classic = try engine.makeAccumulator(settings: settings), a = try engine.makeAccumulator(settings: settings)
-      let t = try remeasured(name) {
+      let t = try remeasured(name) { () throws -> (classic: Double, metal4: Double) in
         try interleaved(
           m, classic: { cb in try classic.accumulate(frame.frame, burnInLUT: nil, monitorLUT: nil, into: cb) },
           metal4: { s in try a.accumulate(frame.frame, burnInLUT: nil, monitorLUT: nil, into: s) })
@@ -66,7 +66,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
           })
       }
       let classic = try group(), g = try group()
-      let t = try remeasured("fused \(stage)") {
+      let t = try remeasured("fused \(stage)") { () throws -> (classic: Double, metal4: Double) in
         try interleaved(
           m, classic: { cb in try classic.accumulate(frame.frame, burnInLUT: lut, monitorLUT: nil, into: cb) },
           metal4: { s in try g.accumulate(frame.frame, burnInLUT: lut, monitorLUT: nil, into: s) })
@@ -90,7 +90,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
       let a = try engine.makeAccumulator(settings: settings)
       try GPU.run { cb in try a.accumulate(frame.frame, burnInLUT: nil, monitorLUT: nil, into: cb) }
       let classic = engine.makeRenderer(), r = engine.makeRenderer()
-      let draw = try remeasured("\(name) draw") {
+      let draw = try remeasured("\(name) draw") { () throws -> (classic: Double, metal4: Double) in
         try interleaved(
           m, classic: { cb in try classic.render(a, target: target, clear: true, into: cb) },
           metal4: { s in try r.render(a, target: target, clear: true, into: s) })
@@ -102,7 +102,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
         display.gain = flip ? 1 : 1.0001
         return display
       }
-      let resolve = try remeasured("\(name) resolve + draw") {
+      let resolve = try remeasured("\(name) resolve + draw") { () throws -> (classic: Double, metal4: Double) in
         try interleaved(
           m, classic: { cb in try classic.render(a, display: next(), target: target, clear: true, into: cb) },
           metal4: { s in try r.render(a, display: next(), target: target, clear: true, into: s) })
@@ -121,7 +121,7 @@ final class ScopeMetal4Benchmarks: XCTestCase {
     let sdr = engine.makeRenderer(), pq = engine.makeRenderer()
     pq.setOutputColor(MonitorOutputColor(primaries: .rec2020, encoding: .pq))
     // Both layers measured back to back in each round.
-    let pair = try remeasured("PQ encode against SDR") {
+    let pair = try remeasured("PQ encode against SDR") { () throws -> (sdr: Double, pq: Double) in
       (
         sdr: try interleaved(m, classic: { _ in }, metal4: { s in try sdr.render(a, target: edr, clear: true, into: s) })
           .metal4,

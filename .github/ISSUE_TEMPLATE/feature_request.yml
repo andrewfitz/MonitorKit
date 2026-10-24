@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest a new monitoring tool, scope, meter, format or API.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do and why the current API doesn't cover it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How it should work, including the API you have in mind if you have one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reference
+    attributes:
+      label: Reference
+      description: The standard, manufacturer document or monitor that defines the behaviour (for example ITU-R BT.2408, a camera's manual, a Blackmagic or Sony feature). MonitorKit cites a published source for every constant.
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module
+      multiple: true
+      options:
+        - MonitorKitCore
+        - MonitorKit
+        - MonitorKitScopes
+        - MonitorKitAudio
+        - MonitorKitUI
+        - Not sure
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other designs you considered.
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to implement this myself.

@@ -1,0 +1,29 @@
+# Swift Package Manager
+.build/
+.build-*/
+.swiftpm/
+/.index-build/
+/Packages/
+Package.resolved
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.xcresult
+
+# Metal captures and traces
+*.gputrace
+*.trace
+
+# macOS
+.DS_Store
+._*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~

@@ -1,0 +1,7 @@
+# actionlint configuration (https://github.com/rhysd/actionlint).
+self-hosted-runner:
+  # GitHub-hosted, not self-hosted: the Xcode 27 image (macOS 27, Apple silicon),
+  # generally available since 2026-10-15. Listed because actionlint's built-in
+  # label list predates it.
+  labels:
+    - xcode-27

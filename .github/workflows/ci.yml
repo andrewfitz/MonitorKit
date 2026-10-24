@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # GitHub-hosted macOS runners are virtual machines: the GPU is a paravirtual
+  # device that may not support Metal 4, and timings are not representative.
+  # With MONITORKIT_CI=1 the test suite skips the tests that need a GPU feature
+  # the runner lacks, and skips timing budgets. See CONTRIBUTING.md.
+  MONITORKIT_CI: "1"
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.macos }}, Xcode ${{ matrix.xcode }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The newest Xcode and macOS.
+          - runner: xcode-27
+            macos: "27"
+            xcode: "27.0"
+            xcode-path: /Applications/Xcode_27.app
+          # The deployment target, macOS 26, with the newest Xcode 26 on the image.
+          - runner: macos-26
+            macos: "26"
+            xcode: "26.6"
+            xcode-path: /Applications/Xcode_26.6.app
+          # The oldest supported toolchain: Xcode 26.0.1 (Swift 6.2).
+          - runner: macos-26
+            macos: "26"
+            xcode: "26.0.1"
+            xcode-path: /Applications/Xcode_26.0.1.app
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode ${{ matrix.xcode }}
+        run: sudo xcode-select --switch "${{ matrix.xcode-path }}/Contents/Developer"
+
+      - name: Toolchain and GPU
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          system_profiler SPDisplaysDataType || true
+
+      - name: Cache .build
+        uses: actions/cache@v6
+        with:
+          path: .build
+          key: spm-${{ matrix.runner }}-xcode${{ matrix.xcode }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
+          restore-keys: |
+            spm-${{ matrix.runner }}-xcode${{ matrix.xcode }}-
+
+      - name: Build (debug)
+        run: swift build
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Test
+        run: swift test
+
+  ios:
+    name: iOS build, Xcode ${{ matrix.xcode }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: xcode-27
+            xcode: "27.0"
+            xcode-path: /Applications/Xcode_27.app
+          - runner: macos-26
+            xcode: "26.6"
+            xcode-path: /Applications/Xcode_26.6.app
+          - runner: macos-26
+            xcode: "26.0.1"
+            xcode-path: /Applications/Xcode_26.0.1.app
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode ${{ matrix.xcode }}
+        run: sudo xcode-select --switch "${{ matrix.xcode-path }}/Contents/Developer"
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
+
+      - name: Build every library for iOS
+        run: |
+          xcodebuild build \
+            -scheme MonitorKit-Package \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO

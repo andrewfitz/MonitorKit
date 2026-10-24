@@ -1,0 +1,13 @@
+version: 1
+builder:
+  configs:
+    # DocC documentation, built on macOS. The first target is the landing page.
+    - documentation_targets:
+        - MonitorKit
+        - MonitorKitCore
+        - MonitorKitScopes
+        - MonitorKitAudio
+        - MonitorKitUI
+    # The iOS compatibility build covers every library product.
+    - platform: ios
+      scheme: MonitorKit-Package

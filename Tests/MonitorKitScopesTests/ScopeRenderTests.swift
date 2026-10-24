@@ -78,7 +78,9 @@ final class ScopeRenderTests: XCTestCase {
           let frameColumns = Double((0..<1920).filter { $0 * 1024 / 1920 == column }.count)
           let unit = frameColumns * 1080 / 512
           let i = min(1, curve.value(density: gain * count / unit))
-          expected += i * (bases[k] + (SIMD3(repeating: 1) - bases[k]) * (i * i * 0.6))
+          let base: SIMD3<Double> = bases[k]
+          let towardWhite: SIMD3<Double> = (SIMD3<Double>(repeating: 1) - base) * (i * i * 0.6)
+          expected += i * (base + towardWhite)
         }
         expected = simd_min(expected, SIMD3(repeating: 1))
         if expected.max() > 0.05 { lit += 1 }

@@ -21,7 +21,9 @@ final class GPUBenchmarks: XCTestCase {
     var state = MonitorState()
     state.zebras[0] = ZebraSet(mode: .lowerLimit, level: 90)
     state.focus.enabled = true
-    let tiles = (0..<4).map { MonitorRegion(x: Double($0 % 2) / 2, y: Double($0 / 2) / 2, width: 0.5, height: 0.5) }
+    let tiles = (0..<4).map { (i: Int) -> MonitorRegion in
+      MonitorRegion(x: Double(i % 2) / 2, y: Double(i / 2) / 2, width: 0.5, height: 0.5)
+    }
     let surfaces = tiles.map { MonitorSurface(source: source, state: state, region: $0) }
     var w = ScopeSettings(kind: .waveform, stage: .output)
     w.waveformMode = .rgbParade

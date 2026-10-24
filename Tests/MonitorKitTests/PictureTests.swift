@@ -241,7 +241,7 @@ final class PictureTests: XCTestCase {
     let gpu = try requireGPU()
     // The probe: an 8 × 32 row gradient, de-squeezed 4× into 9 × 9, footprint (0.89, 3.56).
     var gradient = SyntheticFrame(layout: .rgba32Float, width: 8, height: 32)
-    gradient.rgb = (0..<(8 * 32)).map { SIMD3(repeating: Double($0 / 8) / 31) }
+    gradient.rgb = (0..<(8 * 32)).map { (i: Int) -> SIMD3<Double> in SIMD3<Double>(repeating: Double(i / 8) / 31) }
     let frame = try gradient.frame(gpu, signal: SignalDescription(range: .full))
     var state = MonitorState()
     state.geometry.desqueeze = 4

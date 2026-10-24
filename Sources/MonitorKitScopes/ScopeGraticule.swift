@@ -152,29 +152,36 @@ extension WaveformScale {
     var ticks: [ScopeTick]
     switch self {
     case .percent:
-      ticks = stride(from: -10.0, through: 110, by: 10).map {
-        ScopeTick(value: $0, level: $0 / 100, label: number($0), isMajor: $0 == 0 || $0 == 50 || $0 == 100)
+      ticks = stride(from: -10.0, through: 110, by: 10).map { (v: Double) -> ScopeTick in
+        let isMajor: Bool = v == 0 || v == 50 || v == 100
+        return ScopeTick(value: v, level: v / 100, label: number(v), isMajor: isMajor)
       }
     case .codeValues:
       let legal = range == .legal
       let codes: [Double] =
         legal ? [4, 64, 128, 256, 384, 512, 640, 768, 896, 940, 1019] : [0, 128, 256, 384, 512, 640, 768, 896, 1023]
       let majors: Set<Double> = legal ? [64, 512, 940] : [0, 512, 1023]
-      ticks = codes.map {
-        ScopeTick(
-          value: $0, level: legal ? ($0 - 64) / 876 : $0 / 1023, label: number($0), isMajor: majors.contains($0))
+      ticks = codes.map { (code: Double) -> ScopeTick in
+        let level: Double = legal ? (code - 64) / 876 : code / 1023
+        return ScopeTick(value: code, level: level, label: number(code), isMajor: majors.contains(code))
       }
     case .pqNits:
       let majors: [Double] = [0.1, 1, 10, 100, 203, 1000, 4000, 10000]
       let minors: [Double] = [0.2, 0.5, 2, 5, 20, 50, 500, 2000]
-      ticks = (majors.map { ($0, true) } + minors.map { ($0, false) }).sorted { $0.0 < $1.0 }.map {
-        ScopeTick(value: $0.0, level: ScopeTransfer.pqSignal(nits: $0.0), label: number($0.0), isMajor: $0.1)
+      let marks: [(nits: Double, isMajor: Bool)] =
+        (majors.map { (nits: $0, isMajor: true) } + minors.map { (nits: $0, isMajor: false) }).sorted { $0.nits < $1.nits }
+      ticks = marks.map { (mark: (nits: Double, isMajor: Bool)) -> ScopeTick in
+        ScopeTick(
+          value: mark.nits, level: ScopeTransfer.pqSignal(nits: mark.nits), label: number(mark.nits), isMajor: mark.isMajor)
       }
     case .hlgNits:
       let majors: [Double] = [1, 10, 100, 203, 1000]
       let minors: [Double] = [0.1, 2, 5, 20, 50, 500]
-      ticks = (majors.map { ($0, true) } + minors.map { ($0, false) }).sorted { $0.0 < $1.0 }.map {
-        ScopeTick(value: $0.0, level: ScopeTransfer.hlgSignal(nits: $0.0), label: number($0.0), isMajor: $0.1)
+      let marks: [(nits: Double, isMajor: Bool)] =
+        (majors.map { (nits: $0, isMajor: true) } + minors.map { (nits: $0, isMajor: false) }).sorted { $0.nits < $1.nits }
+      ticks = marks.map { (mark: (nits: Double, isMajor: Bool)) -> ScopeTick in
+        ScopeTick(
+          value: mark.nits, level: ScopeTransfer.hlgSignal(nits: mark.nits), label: number(mark.nits), isMajor: mark.isMajor)
       }
     }
     return Self.clamped(ticks, levelRange)
@@ -195,8 +202,9 @@ extension WaveformScale {
     let majors: Set<Double> = legal ? [64, 512, 960] : [0, 512, 1023]
     let span = legal ? 896.0 : 1023.0
     return Self.clamped(
-      codes.map {
-        ScopeTick(value: $0, level: ($0 - 512) / span + 0.5, label: String(Int($0)), isMajor: majors.contains($0))
+      codes.map { (code: Double) -> ScopeTick in
+        let level: Double = (code - 512) / span + 0.5
+        return ScopeTick(value: code, level: level, label: String(Int(code)), isMajor: majors.contains(code))
       }, levelRange)
   }
 

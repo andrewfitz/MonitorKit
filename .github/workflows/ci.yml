@@ -34,16 +34,21 @@ jobs:
             macos: "27"
             xcode: "27.0"
             xcode-path: /Applications/Xcode_27.app
+            test: true
           # The deployment target, macOS 26, with the newest Xcode 26 on the image.
           - runner: macos-26
             macos: "26"
             xcode: "26.6"
             xcode-path: /Applications/Xcode_26.6.app
-          # The oldest supported toolchain: Xcode 26.0.1 (Swift 6.2).
+            test: true
+          # The oldest supported toolchain: Xcode 26.0.1 (Swift 6.2). It builds
+          # the library; its type checker gives up on some test expressions, so
+          # the tests run on Xcode 26.6 and newer.
           - runner: macos-26
             macos: "26"
             xcode: "26.0.1"
             xcode-path: /Applications/Xcode_26.0.1.app
+            test: false
     steps:
       - uses: actions/checkout@v7
 
@@ -72,6 +77,7 @@ jobs:
         run: swift build -c release
 
       - name: Test
+        if: matrix.test
         run: swift test
 
   ios:

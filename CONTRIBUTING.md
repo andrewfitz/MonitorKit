@@ -13,7 +13,7 @@ By taking part you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Please re
 ## Requirements
 
 - A Mac with Apple silicon, running macOS 26 or later.
-- Xcode 26 or later (Swift 6.2 tools or newer). CI builds and tests with Xcode 26.0.1 (the oldest supported) and Xcode 26.6 on macOS 26, and Xcode 27 on macOS 27.
+- Xcode 26 or later (Swift 6.2 tools or newer) to build the library. Running the tests needs Xcode 26.6 or later: Swift 6.2's type checker gives up on some test expressions. CI builds with Xcode 26.0.1 (the oldest supported), and builds and tests with Xcode 26.6 on macOS 26 and Xcode 27 on macOS 27.
 - No Metal toolchain: the shaders are `.msl` text resources, compiled at runtime by the OS.
 - No third-party dependencies. Please don't add any.
 

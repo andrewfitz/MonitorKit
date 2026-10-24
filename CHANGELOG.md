@@ -6,7 +6,7 @@ All notable changes to MonitorKit are documented here. The format follows [Keep 
 
 ### Fixed
 
-- The package and its tests compile with Xcode 26.0.1 and 26.6 (Swift 6.2 and 6.3). Those compilers gave up type-checking the waveform and chroma graticule tick builders (`WaveformScale.ticks`, `chromaTicks`) and three test expressions. Behaviour is unchanged.
+- The library compiles with Xcode 26.0.1 and 26.6 (Swift 6.2 and 6.3), and its tests with Xcode 26.6. Those compilers gave up type-checking the waveform and chroma graticule tick builders (`WaveformScale.ticks`, `chromaTicks`) and several test expressions. Behaviour is unchanged. Running the tests needs Xcode 26.6 or later.
 
 ## [0.1.0] - 2026-10-24
 

@@ -2,7 +2,7 @@
 
 All notable changes to MonitorKit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, a minor version may change the public API; every such change is listed under **Changed** or **Removed**.
 
-## [Unreleased]
+## [0.1.5] - 2026-10-25
 
 ### Fixed
 
@@ -123,6 +123,7 @@ UI (`MonitorKitUI`):
 
 Documentation: README, FEATURES, API, INTEGRATION, ARCHITECTURE and MATH (every constant with its source and the test that checks it).
 
+[0.1.5]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.5
 [0.1.4]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.4
 [0.1.3]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.3
 [0.1.2]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.2

@@ -104,8 +104,9 @@ public struct LevelMeterView: View {
   }
 
   public var body: some View {
-    // VoiceOver and the tooltip read a summary refreshed once a second, not per frame.
-    TimelineView(.periodic(from: .now, by: 1)) { _ in
+    // VoiceOver and the tooltip read a summary refreshed once a second, not
+    // per frame, and not at all while the meter is paused (no audio, or fixed readings).
+    TimelineView(.animation(minimumInterval: 1, paused: !present || !source.isLive)) { _ in
       let summary = MeterText.peakSummary(source.read(), channels: labels.count, present: present)
       LevelMeterBody(
         source: source, style: style, present: present, labels: labels, scale: scale, spans: spans,
@@ -114,7 +115,10 @@ public struct LevelMeterView: View {
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(name.map { "\($0) audio" } ?? "Audio levels")
       .accessibilityValue(summary)
-      .accessibilityAction(named: "Reset Peaks") { source.meter?.resetPeaks() }
+      .accessibilityActions {
+        // Fixed readings have nothing to reset.
+        if let meter = source.meter { Button("Reset Peaks") { meter.resetPeaks() } }
+      }
       .modifier(LevelMeterTooltip(text: style == .compact ? (name.map { "\($0): " } ?? "") + summary : nil))
     }
   }
@@ -209,12 +213,24 @@ struct LevelMeterSource {
   private(set) var layouts: [MeterChannelLayout] = []
   private var bars: [MeterDisplayBallistics]
   private var holds: [MeterHoldLine]
+  /// Per channel, from the last fresh snapshot: the meter's own hold, its
+  /// true-peak maximum and clip count (the last two only grow until a peak reset).
+  private var meterHolds: [Double]
+  private var maxima: [Float]
+  private var clips: [UInt32]
   private var sequence: UInt64?
+  /// The display's clock: the forward steps of the time it is given, so a
+  /// wall clock that steps back never freezes the bars or the hold lines.
+  private var clock = 0.0
+  private var lastTime: Double?
   private(set) var isOver = false
 
   init(fallRate: Double = 20 / 1.7, holdTime: Double = 2) {
     bars = Array(repeating: MeterDisplayBallistics(fallRate: fallRate), count: 16)
     holds = Array(repeating: MeterHoldLine(holdTime: holdTime, fallRate: fallRate), count: 16)
+    meterHolds = Array(repeating: -.infinity, count: 16)
+    maxima = Array(repeating: -.infinity, count: 16)
+    clips = Array(repeating: 0, count: 16)
   }
 
   /// Follows the meter's own fall rate and hold time (its configuration); a no-op when unchanged.
@@ -222,6 +238,7 @@ struct LevelMeterSource {
     guard fallRate != bars[0].fallRate || holdTime != holds[0].holdTime else { return }
     bars = Array(repeating: MeterDisplayBallistics(fallRate: fallRate), count: 16)
     holds = Array(repeating: MeterHoldLine(holdTime: holdTime, fallRate: fallRate), count: 16)
+    meterHolds = Array(repeating: -.infinity, count: 16)
     sequence = nil
   }
 
@@ -234,6 +251,9 @@ struct LevelMeterSource {
   ) {
     let n = min(max(n, 0), 16)
     if layouts.count != n { layouts = Array(repeating: MeterChannelLayout(), count: n) }
+    if let lastTime, time > lastTime { clock += time - lastTime }
+    if time.isFinite { lastTime = time }
+    let now = clock
     let fresh = s.sequence != sequence
     sequence = s.sequence
     let peakKind = kind == .truePeak || kind == .samplePeak
@@ -250,14 +270,25 @@ struct LevelMeterSource {
           layouts[c] = scale.layout(level: scale.value(forReading: bar), hold: scale.value(forReading: hold))
         } else {
           if fresh {
-            bars[c].ingest(bar, at: time)
-            // A peak reset (here or by the host) clears the maximum: start the line over.
-            if kind == .truePeak && levels.truePeakMax == -.infinity { holds[c].reset() }
-            holds[c].offer(hold, at: time)
+            bars[c].ingest(bar, at: now)
+            // A peak reset (here, by the host or from VoiceOver) lowers the
+            // maximum or the clip count, which otherwise only grow: start the line over.
+            if levels.truePeakMax < maxima[c] || levels.clipCount < clips[c] {
+              holds[c].reset()
+              meterHolds[c] = -.infinity
+            }
+            maxima[c] = levels.truePeakMax
+            clips[c] = levels.clipCount
+            // The meter's own hold catches a peak between snapshots. Take it
+            // only when it rises: offering the same held value with every
+            // snapshot would restart the line's hold until the meter's own
+            // ran out, holding the line twice as long.
+            if hold > meterHolds[c] { holds[c].offer(hold, at: now) }
+            meterHolds[c] = hold
           }
-          let shown = bars[c].value(at: time)
-          holds[c].offer(shown, at: time)
-          let held = holds[c].value(at: time)
+          let shown = bars[c].value(at: now)
+          holds[c].offer(shown, at: now)
+          let held = holds[c].value(at: now)
           layouts[c] = scale.layout(
             level: scale.value(forReading: shown), hold: held.isFinite ? scale.value(forReading: held) : nil)
         }
@@ -332,7 +363,9 @@ struct LevelMeterBody: View {
 
   /// The animated bars: one TimelineView, one Canvas, one snapshot per frame.
   private func bars(_ axis: Axis, gap: CGFloat, holdWidth: CGFloat, overDot: CGFloat = 0) -> some View {
-    TimelineView(.animation(minimumInterval: nil, paused: paused)) { timeline in
+    // Built here, once per body evaluation, not per frame or per rectangle.
+    let colors = LevelMeterColors(palette, scheme: scheme)
+    return TimelineView(.animation(minimumInterval: nil, paused: paused)) { timeline in
       let time = timeline.date.timeIntervalSinceReferenceDate
       Canvas { context, size in
         let state = animator
@@ -347,7 +380,7 @@ struct LevelMeterBody: View {
           state.layouts, spans: spans, reference: reference, axis: axis, size: barsSize, gap: gap,
           holdWidth: holdWidth
         ) { rect, part in
-          context.fill(Path(rect), with: .color(palette.color(part, scheme: scheme)))
+          context.fill(Path(rect), with: .color(colors(part)))
         }
         if overDot > 0 {
           let d = min(overDot, size.height)
@@ -355,7 +388,7 @@ struct LevelMeterBody: View {
           if state.isOver {
             context.fill(Path(ellipseIn: dot), with: .color(palette.over))
           } else {
-            context.stroke(Path(ellipseIn: dot.insetBy(dx: 0.5, dy: 0.5)), with: .color(.secondary.opacity(0.7)), lineWidth: 1)
+            context.stroke(Path(ellipseIn: dot.insetBy(dx: 0.5, dy: 0.5)), with: .color(colors.outline), lineWidth: 1)
           }
         }
       }
@@ -385,10 +418,12 @@ struct LevelMeterBody: View {
           VStack(spacing: r.gap) {
             ForEach(0..<n, id: \.self) { c in
               Text(labels[c]).font(.system(size: n <= 2 ? 8 : 6.5, weight: .semibold)).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.tail)
                 .frame(height: r.thickness)
             }
           }
-          .frame(minWidth: 9)
+          // A long label truncates rather than squeezing the bars.
+          .frame(minWidth: 9, maxWidth: 28, alignment: .leading)
         }
         VStack(spacing: 2) {
           bars(.horizontal, gap: r.gap, holdWidth: 2).frame(height: height)
@@ -396,7 +431,8 @@ struct LevelMeterBody: View {
         }
       }
       .opacity(present ? 1 : 0.4)
-      TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+      // 10 Hz while live; paused with the bars (no audio, or fixed readings).
+      TimelineView(.animation(minimumInterval: 0.1, paused: paused)) { _ in
         let s = source.read()
         HStack(alignment: .top, spacing: 8) {
           if present {
@@ -405,11 +441,11 @@ struct LevelMeterBody: View {
               ForEach(0..<(n + 3) / 4, id: \.self) { line in
                 HStack(spacing: 8) {
                   ForEach(line * 4..<min(n, line * 4 + 4), id: \.self) { c in
+                    // The number stays whole; a long label truncates to fit the strip.
                     HStack(spacing: 3) {
-                      Text(labels[c]).foregroundStyle(.secondary)
-                      maximum(s, c)
+                      Text(labels[c]).foregroundStyle(.secondary).truncationMode(.tail)
+                      maximum(s, c).fixedSize()
                     }
-                    .fixedSize()
                   }
                   if line == (n - 1) / 4 { Text("dBTP").foregroundStyle(.secondary).fixedSize() }
                 }
@@ -432,7 +468,7 @@ struct LevelMeterBody: View {
   private func maximum(_ s: AudioMeterSnapshot, _ c: Int) -> some View {
     let value = c < s.channelCount ? Double(s.channels[c].truePeakMax) : -.infinity
     return Text(texts.maxima[c](value))
-      .foregroundStyle(value >= -1 ? AnyShapeStyle(palette.over) : AnyShapeStyle(.primary))
+      .foregroundStyle(value >= -1 ? AnyShapeStyle(palette.readoutOver(scheme)) : AnyShapeStyle(.primary))
   }
 
   // MARK: Full
@@ -441,7 +477,7 @@ struct LevelMeterBody: View {
     let gap = LevelMeterView.rows(.full, channels: n).gap
     let ruler: CGFloat = 26
     return VStack(alignment: .leading, spacing: 4) {
-      TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+      TimelineView(.animation(minimumInterval: 0.1, paused: paused)) { _ in
         HStack {
           Text("dBTP").font(.system(size: 9)).foregroundStyle(.secondary)
           Spacer(minLength: 4)
@@ -471,7 +507,7 @@ struct LevelMeterBody: View {
       }
       HStack(spacing: 3) {
         Color.clear.frame(width: ruler, height: 1)
-        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+        TimelineView(.animation(minimumInterval: 0.1, paused: paused)) { _ in
           let s = source.read()
           HStack(spacing: gap) {
             ForEach(0..<n, id: \.self) { c in
@@ -572,5 +608,47 @@ struct LevelMeterTooltip: ViewModifier {
 
   func body(content: Content) -> some View {
     if let text { content.help(text) } else { content }
+  }
+}
+
+/// A palette resolved for one appearance: every part's colour built once per
+/// body evaluation, so drawing a frame builds no colour (a zone's dimmed
+/// colour, `Color.opacity`, allocates each time it is made).
+struct LevelMeterColors {
+  let well: Color
+  let reference: Color
+  /// The compact style's unlit over dot.
+  let outline: Color
+  /// By `MeterZoneKind`: normal, target, caution, over.
+  private let lit: [Color]
+  private let unlit: [Color]
+
+  init(_ palette: MeterPalette, scheme: ColorScheme) {
+    well = palette.track(for: scheme)
+    reference = palette.reference
+    outline = Color.secondary.opacity(0.7)
+    let zones: [MeterZoneKind] = [.normal, .target, .caution, .over]
+    lit = zones.map { palette.color($0) }
+    unlit = zones.map { palette.color($0).opacity(palette.unlitOpacity) }
+  }
+
+  private static func index(_ zone: MeterZoneKind?) -> Int {
+    switch zone {
+    case .normal?, nil: return 0
+    case .target?: return 1
+    case .caution?: return 2
+    case .over?: return 3
+    }
+  }
+
+  /// `MeterPalette.color(_:scheme:)` without building a colour.
+  func callAsFunction(_ part: LevelMeterPart) -> Color {
+    switch part {
+    case .well: return well
+    case .unlit(let zone): return unlit[Self.index(zone)]
+    case .lit(let zone), .hold(let zone?): return lit[Self.index(zone)]
+    case .hold(nil): return lit[0]
+    case .reference: return reference
+    }
   }
 }

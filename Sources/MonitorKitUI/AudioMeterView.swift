@@ -132,10 +132,12 @@ final class ReadoutText {
 
 /// The colours of a meter. No standard sets them; these follow the green /
 /// amber / red convention, chosen for a dark meter well in both light and dark
-/// appearance. The zones step in luminance as well as hue (green about 0.44,
-/// amber 0.6, red 0.23 relative luminance; each at least 4.5:1 on the dark
-/// well), so they stay apart for colour-blind viewers, and the over latch
-/// also says "OVER" in words.
+/// appearance. The zones step in luminance as well as hue (green about 0.45,
+/// amber 0.6, red 0.25 relative luminance; each at least 4.5:1 on the dark
+/// appearance's well and 3:1 on the light appearance's), so they stay apart
+/// for colour-blind viewers, and the over latch also says "OVER" in words.
+/// A red readout on the window background uses the darker `latch` in light
+/// appearance and a lighter `over` in dark, so small text keeps 4.5:1 in both.
 public struct MeterPalette: Sendable {
   public var normal: Color
   public var target: Color
@@ -182,6 +184,11 @@ public struct MeterPalette: Sendable {
 
   /// The well for an appearance.
   public func track(for scheme: ColorScheme) -> Color { scheme == .dark ? track : lightTrack }
+
+  /// A readout's red on the window background, where `over` reads at about
+  /// 3.5:1 in both appearances: `latch` in light (5.6:1 on white) and `over`
+  /// mixed a fifth of the way to white in dark (4.8:1 on a #323232 window).
+  func readoutOver(_ scheme: ColorScheme) -> Color { scheme == .dark ? over.mix(with: .white, by: 0.2) : latch }
 
   /// The colour of one rectangle of a level meter.
   public func color(_ part: LevelMeterPart, scheme: ColorScheme) -> Color {
@@ -363,6 +370,7 @@ struct KindColumns: View {
     let spans = scale.zoneSpans
     let reference = scale.alignment.map { scale.position(of: $0) }
     let gap = LevelMeterView.rows(.full, channels: labels.count).gap
+    let colors = LevelMeterColors(palette, scheme: scheme)
     VStack(alignment: .leading, spacing: 4) {
       HStack(alignment: .top, spacing: 3) {
         LevelMeterRuler(ticks: scale.ticks, axis: .vertical, inset: 5).frame(width: 26)
@@ -378,7 +386,7 @@ struct KindColumns: View {
             LevelMeterView.layout(
               animator.layouts, spans: spans, reference: reference, axis: .vertical,
               size: size, gap: gap
-            ) { rect, part in context.fill(Path(rect), with: .color(palette.color(part, scheme: scheme))) }
+            ) { rect, part in context.fill(Path(rect), with: .color(colors(part))) }
           }
         }
         .padding(.vertical, 5)
@@ -412,6 +420,7 @@ struct LoudnessPanel: View {
   var body: some View {
     let spans = scale.zoneSpans
     let reference = scale.alignment.map { scale.position(of: $0) }
+    let colors = LevelMeterColors(palette, scheme: scheme)
     HStack(alignment: .top, spacing: 8) {
       VStack(alignment: .leading, spacing: 4) {
         Text(unit == .lu ? "LU" : "LUFS").font(.system(size: 9)).foregroundStyle(.secondary)
@@ -423,7 +432,7 @@ struct LoudnessPanel: View {
               let m = scale.layout(level: scale.value(forReading: Double(s.loudness.momentary)))
               let st = scale.layout(level: scale.value(forReading: Double(s.loudness.shortTerm)))
               LevelMeterView.layout([m, st], spans: spans, reference: reference, axis: .vertical, size: size, gap: 3) {
-                rect, part in context.fill(Path(rect), with: .color(palette.color(part, scheme: scheme)))
+                rect, part in context.fill(Path(rect), with: .color(colors(part)))
               }
             }
           }
@@ -442,7 +451,7 @@ struct LoudnessPanel: View {
           .frame(width: 24)
         }
       }
-      TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+      TimelineView(.animation(minimumInterval: 0.1, paused: !present)) { _ in
         let r = LoudnessReadout(meter.snapshot())
         let t = texts.strings(r, unit: unit, target: target)
         Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 3) {
@@ -464,7 +473,7 @@ struct LoudnessPanel: View {
     GridRow {
       Text(name).foregroundStyle(.secondary)
       Text(value).gridColumnAlignment(.trailing)
-        .foregroundStyle(over ? AnyShapeStyle(palette.over) : AnyShapeStyle(.primary))
+        .foregroundStyle(over ? AnyShapeStyle(palette.readoutOver(scheme)) : AnyShapeStyle(.primary))
     }
   }
 }
@@ -485,7 +494,8 @@ struct LoudnessPanel: View {
       cache = [
         ReadoutText(loudness), ReadoutText(loudness), ReadoutText(loudness),
         ReadoutText { $0.isFinite ? MeterText.amount($0) + " LU" : "—" },
-        ReadoutText { $0.isFinite ? MeterText.level($0) + " dBTP" : "—" },
+        // Like the level meters' maxima: "−∞" for silence, "—" for no reading.
+        ReadoutText { $0.isNaN ? "—" : MeterText.level($0) + " dBTP" },
         ReadoutText { $0.isFinite ? MeterText.amount($0) + " LU" : "—" },
       ]
     }
@@ -541,7 +551,7 @@ struct CorrelationMeter: View {
         .font(.system(size: 8).monospacedDigit()).foregroundStyle(.secondary)
       }
       .opacity(present ? 1 : 0.4)
-      TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+      TimelineView(.animation(minimumInterval: 0.1, paused: !present)) { _ in
         // ReadoutText keys on tenths: scale by 10 so it moves on hundredths.
         Text(present ? text(Double(meter.snapshot().correlation) * 10) : "—")
           .font(.caption.monospacedDigit()).frame(width: 40, alignment: .trailing)

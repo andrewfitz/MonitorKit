@@ -322,3 +322,151 @@ extension MeterTests {
     XCTAssertEqual(animator.layouts, [MeterChannelLayout(), MeterChannelLayout()])
   }
 }
+
+// MARK: Audit regressions (0.1.3)
+
+extension MeterTests {
+  /// Feeds `frames` of a 1 kHz tone at `amplitude` (0 for silence) to both channels.
+  private func feed(_ meter: AudioMeter, amplitude: Float, frames: Int) {
+    var left = [Float](repeating: 0, count: frames)
+    for k in 0..<frames { left[k] = amplitude * Float(sin(2 * Double.pi * 1000 * Double(k) / 48000)) }
+    var right = left
+    left.withUnsafeMutableBufferPointer { l in
+      right.withUnsafeMutableBufferPointer { r in
+        let pointers = [l.baseAddress!, r.baseAddress!]
+        pointers.withUnsafeBufferPointer { meter.process(planar: $0.baseAddress!, frameCount: frames) }
+      }
+    }
+  }
+
+  /// A burst, then silence, one video frame of audio per display frame: the
+  /// hold line holds 2 s from the burst, then falls. Offering the meter's own
+  /// hold with every snapshot used to restart the line until the meter's hold
+  /// ran out, so it held for 4 s.
+  @MainActor func testHoldLineHoldsTwoSeconds() throws {
+    let meter = try AudioMeter(sampleRate: 48000, channelCount: 2)
+    let scale = MeterScale.expandedPeak()
+    let animator = LevelMeterAnimator(
+      fallRate: meter.configuration.peakDecayRate, holdTime: meter.configuration.peakHoldTime)
+    var fell: Double?
+    var peak = 0.0
+    for frame in 0..<(60 * 5) {
+      let t = Double(frame) / 60
+      feed(meter, amplitude: frame < 3 ? 0.5 : 0, frames: 800)
+      animator.advance(meter.snapshot(), channels: 2, scale: scale, at: t, animate: true)
+      let hold = animator.layouts[0].hold ?? 0
+      if frame == 2 { peak = hold }
+      if frame > 2, fell == nil, hold < peak - 1e-6 { fell = t }
+    }
+    let start = try XCTUnwrap(fell, "the line fell")
+    XCTAssertEqual(start, 2 + 2.0 / 60, accuracy: 0.1, "2 s after the last attack, not 4")
+  }
+
+  /// A peak reset from outside the view (the host, AudioMeterView's menu,
+  /// VoiceOver) restarts the hold line even while audio keeps flowing.
+  @MainActor func testHostPeakResetRestartsTheHoldLine() throws {
+    let meter = try AudioMeter(sampleRate: 48000, channelCount: 2)
+    let scale = MeterScale.expandedPeak()
+    let animator = LevelMeterAnimator()
+    for frame in 0..<110 {
+      if frame == 100 { meter.resetPeaks() }
+      feed(meter, amplitude: frame < 3 ? 0.5 : 0.01, frames: 800)
+      animator.advance(meter.snapshot(), channels: 2, scale: scale, at: Double(frame) / 60, animate: true)
+      if frame == 99 { XCTAssertGreaterThan(animator.layouts[0].hold ?? 0, scale.position(of: -7), "held") }
+    }
+    // 1.6 s after the burst its bar has fallen to about −25 dBTP; the line starts over there.
+    XCTAssertLessThan(animator.layouts[0].hold ?? 0, scale.position(of: -20), "the line starts over from the bar")
+  }
+
+  /// A wall clock stepping back an hour neither freezes the bars nor the hold lines.
+  @MainActor func testAnimatorSurvivesAClockSteppingBack() {
+    let scale = MeterScale.expandedPeak()
+    let animator = LevelMeterAnimator()
+    var s = AudioMeterSnapshot()
+    s.channelCount = 1
+    s.sequence = 1
+    s.channels[0] = AudioChannelLevels(truePeak: -6, truePeakHold: -6, truePeakMax: -6)
+    animator.advance(s, channels: 1, scale: scale, at: 1000, animate: true)
+    animator.advance(s, channels: 1, scale: scale, at: 1000 - 3600, animate: true)
+    animator.advance(s, channels: 1, scale: scale, at: 1000 - 3600 + 1, animate: true)
+    XCTAssertLessThan(animator.layouts[0].bar, scale.position(of: -15), "1 s of fall since the step")
+    animator.advance(s, channels: 1, scale: scale, at: 1000 - 3600 + 8, animate: true)
+    XCTAssertNil(animator.layouts[0].hold, "the hold line has fallen away too")
+  }
+
+  /// Drawing a frame builds no colour: the resolved colours match the
+  /// palette's and cost no allocation per rectangle.
+  func testLevelMeterColorsMatchThePaletteAndAllocateNothing() throws {
+    let palette = MeterPalette.standard
+    var parts: [LevelMeterPart] = [.well, .reference, .hold(nil)]
+    for zone in MeterZoneKind.allCases { parts += [.lit(zone), .unlit(zone), .hold(zone)] }
+    for scheme in [ColorScheme.light, .dark] {
+      let colors = LevelMeterColors(palette, scheme: scheme)
+      for part in parts { XCTAssertEqual(colors(part), palette.color(part, scheme: scheme), "\(part) \(scheme)") }
+      _ = colors(.unlit(.over))
+      var i = 0
+      guard
+        let count = AllocationCounter.measure({
+          while i < parts.count {
+            _ = colors(parts[i])
+            i += 1
+          }
+        })
+      else { throw XCTSkip("malloc_logger is unavailable") }
+      XCTAssertEqual(count, 0, "\(scheme)")
+    }
+  }
+
+  private func luminance(_ color: Color) -> Double {
+    let c = color.resolve(in: EnvironmentValues())
+    return 0.2126 * Double(c.linearRed) + 0.7152 * Double(c.linearGreen) + 0.0722 * Double(c.linearBlue)
+  }
+
+  private func contrast(_ a: Color, _ b: Color) -> Double {
+    let (x, y) = (luminance(a), luminance(b))
+    return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+  }
+
+  /// WCAG contrast: the zones on both wells (graphics, 3:1; 4.5:1 on the
+  /// dark well as documented), a red readout on the window in both
+  /// appearances (text, 4.5:1), the latch's white text, and luminance steps
+  /// between the zones for colour-blind viewers.
+  func testMeterColoursKeepTheirContrast() {
+    let p = MeterPalette.standard
+    for zone in [p.normal, p.caution, p.over] {
+      XCTAssertGreaterThanOrEqual(contrast(zone, p.track), 4.5)
+      XCTAssertGreaterThanOrEqual(contrast(zone, p.lightTrack), 3)
+    }
+    XCTAssertGreaterThanOrEqual(contrast(p.readoutOver(.light), .white), 4.5)
+    XCTAssertGreaterThanOrEqual(contrast(p.readoutOver(.light), Color(white: 0.93)), 4.5)
+    XCTAssertGreaterThanOrEqual(contrast(p.readoutOver(.dark), Color(white: 0.196)), 4.5)
+    XCTAssertGreaterThanOrEqual(contrast(p.readoutOver(.dark), Color(white: 0.118)), 4.5)
+    XCTAssertLessThan(contrast(p.over, .white), 4.5, "why light appearance needs the darker red")
+    XCTAssertGreaterThanOrEqual(contrast(.white, p.latch), 4.5)
+    let (green, amber, red) = (luminance(p.normal), luminance(p.caution), luminance(p.over))
+    XCTAssertGreaterThan(amber, green)
+    XCTAssertGreaterThan(green, red * 1.5)
+  }
+
+  /// Long channel labels truncate: the strip keeps to the width it is offered.
+  @MainActor func testStripFitsLongLabels() throws {
+    let meter = try AudioMeter(sampleRate: 48000, channelCount: 4)
+    let long = ["Camera One Left", "Camera One Right", "Lavalier Microphone", "Boom Microphone"]
+    for labels in [long, ["1", "2", "3", "4"]] {
+      let host = NSHostingController(rootView: LevelMeterView(meter: meter, style: .strip, channelLabels: labels))
+      XCTAssertLessThanOrEqual(host.sizeThatFits(in: CGSize(width: 240, height: 400)).width, 240, "\(labels)")
+    }
+  }
+
+  /// Max TP of digital silence reads "−∞ dBTP" like the level meters' maxima; "—" only without a reading.
+  @MainActor func testMaximumTruePeakReadsMinusInfinityInSilence() {
+    let texts = LoudnessTexts()
+    var r = LoudnessReadout(AudioMeterSnapshot())
+    r.maximumTruePeak = -.infinity
+    XCTAssertEqual(texts.strings(r, unit: .lufs, target: -23).peak, "−∞ dBTP")
+    r.maximumTruePeak = .nan
+    XCTAssertEqual(texts.strings(r, unit: .lufs, target: -23).peak, "—")
+    r.maximumTruePeak = -0.44
+    XCTAssertEqual(texts.strings(r, unit: .lufs, target: -23).peak, "−0.4 dBTP")
+  }
+}

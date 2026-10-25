@@ -505,8 +505,10 @@ final class MathReferenceTests: XCTestCase {
       }
       for (category, lower, upper, ei) in bounds {
         let zone = try XCTUnwrap(zones.first { $0.category == category })
-        XCTAssertEqual(zone.lower, code(lower, ei: ei, empty: range == .legal ? 64 : 0), "\(category) \(range)")
-        XCTAssertEqual(zone.upper, code(upper, ei: ei, empty: range == .legal ? 940 : 1023), "\(category) \(range)")
+        // Purple's published lower bound is the range floor and red's upper is A' = 1.0;
+        // MonitorKit leaves both open (MATH.md 4.2).
+        XCTAssertEqual(zone.lower, code(lower, ei: ei, empty: -.infinity), "\(category) \(range)")
+        XCTAssertEqual(zone.upper, code(upper, ei: ei, empty: .infinity), "\(category) \(range)")
       }
     }
   }

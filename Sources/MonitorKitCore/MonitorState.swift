@@ -734,21 +734,25 @@ public struct MonitorState: Codable, Equatable, Sendable {
     pictureStage = c.lenient(.pictureStage, pictureStage)
     self = normalized()
   }
+  /// Writes the normalized state: what decoding would produce anyway. JSON has no
+  /// NaN or infinity, so one non-finite field would otherwise throw and cost a
+  /// host's whole settings blob (an embedding `@LenientMonitorState` included).
   public func encode(to encoder: Encoder) throws {
+    let s = normalized()
     var c = encoder.container(keyedBy: CodingKeys.self)
     try c.encode(Self.codingKind, forKey: .kind)
     try c.encode(Self.schemaVersion, forKey: .schemaVersion)
-    try c.encode(clean, forKey: .clean)
-    try c.encode(zebras, forKey: .zebras)
-    try c.encode(falseColor, forKey: .falseColor)
-    try c.encode(focus, forKey: .focus)
-    try c.encode(guides, forKey: .guides)
-    try c.encode(geometry, forKey: .geometry)
-    try c.encode(display, forKey: .display)
-    try c.encode(monitorLUT, forKey: .monitorLUT)
-    try c.encode(displayTransform, forKey: .displayTransform)
-    try c.encode(clipIndicators, forKey: .clipIndicators)
-    try c.encode(pictureStage, forKey: .pictureStage)
+    try c.encode(s.clean, forKey: .clean)
+    try c.encode(s.zebras, forKey: .zebras)
+    try c.encode(s.falseColor, forKey: .falseColor)
+    try c.encode(s.focus, forKey: .focus)
+    try c.encode(s.guides, forKey: .guides)
+    try c.encode(s.geometry, forKey: .geometry)
+    try c.encode(s.display, forKey: .display)
+    try c.encode(s.monitorLUT, forKey: .monitorLUT)
+    try c.encode(s.displayTransform, forKey: .displayTransform)
+    try c.encode(s.clipIndicators, forKey: .clipIndicators)
+    try c.encode(s.pictureStage, forKey: .pictureStage)
   }
 
   /// Every value clamped to its documented range; non-finite values reset.

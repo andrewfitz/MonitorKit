@@ -93,6 +93,11 @@ public final class MonitorFeed {
   /// settings it encodes nothing either (a frozen frame, or a display refreshing
   /// faster than the source). A processed frame (`MonitorFrame.isProcessed`) is
   /// treated like peaking off: peaking needs the camera's own signal.
+  ///
+  /// The monitor stage applies `monitorLUT` whenever the feed has one. A surface
+  /// whose state turns the monitor LUT off (`MonitorState.monitorLUT` false) shows
+  /// the output there, so analyse it with `focus.stage` `.output`: a monitor-stage
+  /// mask made through the LUT is not that surface's (`.focusNotAnalyzed`).
   public func analyze(_ frame: MonitorFrame, focus: FocusSettings, into commandBuffer: MTLCommandBuffer)
     throws
   {

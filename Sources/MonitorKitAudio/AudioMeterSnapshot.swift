@@ -136,7 +136,7 @@ public struct AudioMeterSnapshot: Sendable, BitwiseCopyable {
   }
 
   public subscript(channel: Int) -> AudioChannelLevels {
-    precondition(channel >= 0 && channel < channelCount, "channel out of range")
+    precondition(channel >= 0 && channel < storedChannelCount, "channel out of range")
     return channels[channel]
   }
 
@@ -150,10 +150,14 @@ public struct AudioMeterSnapshot: Sendable, BitwiseCopyable {
   /// language pair or an ISO feed on the same embed does not count.
   public var programmeMaximumTruePeak: Float { maximumTruePeak(channels: programmeChannelMask) }
 
+  /// `channelCount` bounded to the stored channels: the field is public, so a
+  /// host-built snapshot can claim more than the 16 slots hold.
+  var storedChannelCount: Int { Swift.min(Swift.max(channelCount, 0), channels.count) }
+
   private func maximumTruePeak(channels mask: UInt16) -> Float {
     var m = -Float.infinity
     var c = 0
-    while c < channelCount {
+    while c < storedChannelCount {
       if mask & (1 << c) != 0 { m = max(m, channels[c].truePeakMax) }
       c += 1
     }

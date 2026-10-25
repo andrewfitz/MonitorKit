@@ -36,6 +36,9 @@ public struct MonitorView {
   /// A monitor of `source`, editing `state` through the binding. It draws on
   /// `queue` (one is created if nil) from a display link on `displayLinkRunLoop`;
   /// `onStatusChange` runs on the main actor when what the surface shows changes.
+  /// `source`, `state` and `outputColor` follow updates; `engine`, `queue`,
+  /// `configuration` and `displayLinkRunLoop` are fixed when the view is made:
+  /// give it a new `.id` to change them.
   public init(
     engine: MonitorEngine, source: MonitorSource, state: Binding<MonitorState>,
     outputColor: MonitorOutputColor = .signalNative, queue: MTLCommandQueue? = nil,

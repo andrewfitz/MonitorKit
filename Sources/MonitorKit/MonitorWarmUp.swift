@@ -86,7 +86,9 @@ extension MonitorEngine {
   /// Call it off the frame path, e.g. from a background task at start-up: it may
   /// take a few hundred milliseconds. Thread-safe; concurrent encodes keep drawing
   /// with whatever is built. Already built pipelines are skipped. Returns the
-  /// number of pipelines built by this call. With a `pipelineArchive`, pipelines
+  /// growth of `pipelinesBuilt` while it ran: the picture pipelines it built
+  /// (focus and Freeze kernels are not counted), plus any other thread's
+  /// specialization stored meanwhile. With a `pipelineArchive`, pipelines
   /// saved by an earlier launch load from it instead of compiling, and any built
   /// here are saved to it before this returns, unless `save` is false: a host
   /// warming several engines (e.g. this one, then a `ScopeEngine`) saves each

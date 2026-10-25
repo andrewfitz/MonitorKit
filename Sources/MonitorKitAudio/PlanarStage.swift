@@ -70,23 +70,32 @@ struct PlanarStage {
   /// of a buffer without data (an unrendered bus), read as silence; either
   /// way every later buffer keeps its channel positions.
   func bindBufferList(_ list: UnsafePointer<AudioBufferList>, frameCount: Int, format: AudioSampleFormat) {
-    let raw = UnsafeRawPointer(list)
     let bufferCount = Int(list.pointee.mNumberBuffers)
-    let first = raw + MemoryLayout<AudioBufferList>.offset(of: \.mBuffers)!
+    // The buffers start one AudioBuffer before the end of the list's own
+    // struct (its one-element flexible array), as in Core Audio's
+    // UnsafeMutableAudioBufferListPointer. A key path offset or a generic
+    // raw load would instantiate a key path object and the imported types'
+    // metadata on the first call, which allocates on the audio thread in
+    // unoptimized builds.
+    let first = UnsafeRawPointer(list + 1).assumingMemoryBound(to: AudioBuffer.self) - 1
     var c = 0
     var b = 0
     while b < bufferCount, c < channelCount {
-      let buffer = (first + b * MemoryLayout<AudioBuffer>.stride).load(as: AudioBuffer.self)
+      let buffer = first[b]
       b += 1
       let width = Int(buffer.mNumberChannels)
-      let data = buffer.mData.map(UnsafeRawPointer.init)
+      let data = UnsafeRawPointer(buffer.mData)
       if data != nil {
         precondition(
           frameCount * width * format.byteSize <= Int(buffer.mDataByteSize), "AudioBuffer shorter than frameCount")
       }
       var i = 0
       while i < width, c < channelCount {
-        sources[c] = ChannelSource(base: data.map { $0 + i * format.byteSize }, stride: width)
+        if let data {
+          sources[c] = ChannelSource(base: data + i * format.byteSize, stride: width)
+        } else {
+          sources[c] = ChannelSource(base: nil, stride: width)
+        }
         c += 1
         i += 1
       }

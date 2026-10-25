@@ -164,7 +164,9 @@ public struct MeterScale: Sendable, Hashable {
     case .piecewise(let points):
       p = Self.interpolate(points, value)
     }
-    return min(max(p, 0), 1)
+    // A zero-width or infinite scale divides 0 by 0 or inf by inf; min and
+    // max pass that NaN through, and a renderer would draw a NaN bar.
+    return p.isNaN ? 0 : min(max(p, 0), 1)
   }
 
   /// `position(of: value(forReading:))`.

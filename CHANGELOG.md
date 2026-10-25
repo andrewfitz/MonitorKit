@@ -20,6 +20,14 @@ All notable changes to MonitorKit are documented here. The format follows [Keep 
 - Make correlation independent of callback partitions with exact per-sample exponential weights and nine Double vDSP passes over the selected pair; reject VU coefficients whose rounded poles are unstable, and preserve silence through custom scale conversions.
 - Handle degenerate BT.1886 endpoints, white-point temperatures outside the daylight domain, overflowing color analysis, and invalid layout, guide, gesture and readout inputs without integer traps or invalid geometry.
 - Revalidate mutable display configuration, release paused offscreen GPU work after completion, resume UIKit display links after scene activation, and show unavailable reasons in list legends.
+- ARRI LogC false colour shows clipped highlights red and crushed blacks purple: the top zone is open upward (full code 1023, legal 940 and super-whites were grey) and the bottom zone open downward (legal sub-blacks were grey). The ARRI-style S-Log3 mode keeps purple's floor at code 0 so saturated blues do not read as black clipping. See MATH.md §4.2.
+- Float RGB frames with NaN or infinite samples keep their clip, zebra, peaking and guide overlays, and magnifying an infinite area no longer draws black; NaN reads as 0 and ±inf as ±65504. The shader clamps hand-filled guide and band counts.
+- Saving a `MonitorState` or `MonitorOutputColor` with a NaN or infinite field writes its normalized value instead of throwing.
+- A synchronous pipeline request waits for a stalled background build only up to a deadline, then compiles itself, in both `MonitorEngine` and `ScopeEngine`, so starved background builds cannot hang warm-up. A failed background specialization is not restarted every frame.
+- Library-made frame ids start at 2^63, so a frozen frame's focus mask cannot be reused for a host frame numbered the same.
+- The first `AudioMeter.process(bufferList:)` call allocates nothing; snapshots claiming more than 16 channels no longer trap; degenerate meter scales never position at NaN; the clip count saturates instead of wrapping.
+- `LevelMeterView` draws nothing for a NaN bar or a non-positive hold, and an endless hold follows peak resets on sample-peak bars. VoiceOver steps on a slider never move a value against the requested direction when it lies outside the slider's range.
+- 1:1 magnifier pans are pixel exact (small drags were lost in one direction and doubled in the other), and pans keep the centre of an axis that fits. A re-added tile whose source was cleared no longer keeps a stale viewport, layout or status, and a second renderer drawing nothing cannot clear another renderer's publication.
 
 ### Changed
 

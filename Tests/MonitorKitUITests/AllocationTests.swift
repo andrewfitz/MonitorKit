@@ -69,10 +69,14 @@ final class AllocationTests: XCTestCase {
   func testSteadyTicksAndHandoffAllocateNothing() throws {
     try skipUnderTheDebugLayer()
     let r = try rig()
+    // The warm-up makes every call the measured ticks make, needsDisplay too: the
+    // first call of a function can allocate once in the Swift runtime (a lazy
+    // witness table), which is not a per-tick allocation.
     for i in 0..<6 {
       r.sources[0].submit(r.pools[0][i % 4])
       r.sources[1].submit(r.pools[1][i % 4])
       try r.renderer.update()
+      _ = r.renderer.needsDisplay(width: 128, height: 72, pixelFormat: .bgra8Unorm)
       try r.gpu.run { try r.renderer.encode(target: r.target, into: $0) }
     }
     var submits: [Int] = [], ticks: [Int] = [], idle: [Int] = []
@@ -292,9 +296,13 @@ extension AllocationTests {
           accumulators[i], target: target, viewport: scopeRegions[i].viewport(width: 128, height: 72)!, into: cb)
       }
     }
+    // The warm-up makes every call the measured ticks make, needsDisplay too: the
+    // first call of a function can allocate once in the Swift runtime (a lazy
+    // witness table), which is not a per-tick allocation.
     for i in 0..<6 {
       source.submit(pool[i % 4])
       try renderer.update()
+      _ = renderer.needsDisplay(width: 128, height: 72, pixelFormat: .bgra8Unorm)
       try gpu.run { try renderer.encode(target: target, into: $0) }
       try gpu.run { try byHand(pool[i % 4], $0) }
     }
@@ -327,11 +335,11 @@ extension AllocationTests {
     // edit before measuring the zero-allocation steady-state ticks below.
     try renderer.update()
     XCTAssertFalse(renderer.scopeGroup(for: overlays[0]) === renderer.scopeGroup(for: overlays[1]))
-    var splits: [Int] = []
+    var splitTicks: [Int] = [], splits: [Int] = []
     for i in 30..<54 {
       source.submit(pool[i % 4])
       guard let t = AllocationCounter.measure({ _ = try? renderer.update() }) else { return }
-      ticks.append(t)
+      splitTicks.append(t)
       let cb = warmCommandBuffer(gpu, target), cb2 = warmCommandBuffer(gpu, target)
       splits.append(
         try AllocationCounter.measure {
@@ -344,7 +352,7 @@ extension AllocationTests {
     }
     let sp = splits.sorted()[splits.count / 2]
     print("BENCH MonitorRenderer encodePictures + encodeScopes: \(sp) heap allocations")
-    XCTAssertEqual(ticks.max(), 0, "update() with a scope rate allocates")
+    XCTAssertEqual(splitTicks.max(), 0, "update() with a scope rate allocates")
     XCTAssertLessThanOrEqual(sp, h)
   }
 }

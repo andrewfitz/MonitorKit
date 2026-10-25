@@ -601,7 +601,11 @@ public final class AudioMeter: @unchecked Sendable {
       var below: vDSP_Length = 0
       var above: vDSP_Length = 0
       vDSP_vclipc(x, 1, &low, &high, envelopes[slot], 1, length, &below, &above)
-      s.pointee.clipCount &+= UInt32(truncatingIfNeeded: below + above)
+      // Saturates: a channel stuck at full scale would otherwise wrap the
+      // count back towards 0 after 2^32 samples (about a day at 48 kHz).
+      let clipped = UInt32(truncatingIfNeeded: min(below + above, vDSP_Length(UInt32.max)))
+      let count = s.pointee.clipCount
+      s.pointee.clipCount = clipped > UInt32.max - count ? UInt32.max : count + clipped
     }
   }
 
@@ -630,8 +634,9 @@ public final class AudioMeter: @unchecked Sendable {
 
   /// Adds the chunk's energy to channel c's RMS ticks, closing each tick into
   /// the ring and the running window sum; `advanceRMSTicks` then moves the
-  /// shared tick position the same way. A tick is at most 3840 samples; its
-  /// Float sum is good to 1e-5 dB.
+  /// shared tick position the same way. A tick is 3840 samples at most on
+  /// the standard rates (5 ms at 768 kHz), 100 ms at a rate whose 100 ms block
+  /// has no small divisor; its Float sum is good to about 1e-5 dB either way.
   private func accumulateRMS(channel c: Int, frames n: Int) {
     let x = stage.samples(c)
     let s = channelState + c

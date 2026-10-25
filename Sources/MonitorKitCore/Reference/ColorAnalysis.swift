@@ -186,6 +186,10 @@ public enum ARRIFalseColorProfile: String, CaseIterable, Codable, Sendable {
   }
   /// Exact published 10-bit precomputed table. Full-range values have independent
   /// rounding and must not be derived by rescaling already rounded legal bounds.
+  /// Red is open-ended upward and purple downward (MonitorKit's convention, MATH.md
+  /// 4.2): read literally, red's `< Bzu` at A' = 1.0 (940 legal, 1023 full) drops the
+  /// most clipped codes and super-whites to grey, and purple's floor (64 legal, 0
+  /// full) drops sub-blacks and negative float values to grey.
   public func zones(range: CodeRange) -> [ARRIFalseColorZone] {
     switch (self, range) {
     case (.logC3EI800, .legal): return Self.logC3LegalZones
@@ -196,36 +200,36 @@ public enum ARRIFalseColorProfile: String, CaseIterable, Codable, Sendable {
   }
 
   private static let logC3LegalZones: [ARRIFalseColorZone] = [
-    .init(category: .red, lower: 878, upper: 940),
+    .init(category: .red, lower: 878, upper: .infinity),
     .init(category: .yellow, lower: 857, upper: 878),
     .init(category: .pink, lower: 461, upper: 480),
     .init(category: .green, lower: 397, upper: 415),
     .init(category: .blue, lower: 152, upper: 172),
-    .init(category: .purple, lower: 64, upper: 152),
+    .init(category: .purple, lower: -.infinity, upper: 152),
   ]
   private static let logC3FullZones: [ARRIFalseColorZone] = [
-    .init(category: .red, lower: 951, upper: 1023),
+    .init(category: .red, lower: 951, upper: .infinity),
     .init(category: .yellow, lower: 926, upper: 951),
     .init(category: .pink, lower: 464, upper: 486),
     .init(category: .green, lower: 389, upper: 410),
     .init(category: .blue, lower: 103, upper: 127),
-    .init(category: .purple, lower: 0, upper: 103),
+    .init(category: .purple, lower: -.infinity, upper: 103),
   ]
   private static let logC4LegalZones: [ARRIFalseColorZone] = [
-    .init(category: .red, lower: 808, upper: 940),
+    .init(category: .red, lower: 808, upper: .infinity),
     .init(category: .yellow, lower: 789, upper: 808),
     .init(category: .pink, lower: 351, upper: 366),
     .init(category: .green, lower: 300, upper: 315),
     .init(category: .blue, lower: 149, upper: 159),
-    .init(category: .purple, lower: 64, upper: 149),
+    .init(category: .purple, lower: -.infinity, upper: 149),
   ]
   private static let logC4FullZones: [ARRIFalseColorZone] = [
-    .init(category: .red, lower: 868, upper: 1023),
+    .init(category: .red, lower: 868, upper: .infinity),
     .init(category: .yellow, lower: 846, upper: 868),
     .init(category: .pink, lower: 335, upper: 353),
     .init(category: .green, lower: 276, upper: 293),
     .init(category: .blue, lower: 99, upper: 111),
-    .init(category: .purple, lower: 0, upper: 99),
+    .init(category: .purple, lower: -.infinity, upper: 99),
   ]
 
   public func category(achromaticCode: Double, range: CodeRange) -> ARRIFalseColorCategory? {
@@ -244,8 +248,8 @@ public enum ARRIFalseColorProfile: String, CaseIterable, Codable, Sendable {
     // edge just below itself (legal code 397, for example).
     let a = rgb.r == rgb.g && rgb.g == rgb.b ? rgb.r : luma
     let zone = zones(range: range).first {
-      a >= range.normalizeLuma(code: $0.lower, bitDepth: 10)!
-        && a < range.normalizeLuma(code: $0.upper, bitDepth: 10)!
+      a >= (range.normalizeLuma(code: $0.lower, bitDepth: 10) ?? -.infinity)
+        && a < (range.normalizeLuma(code: $0.upper, bitDepth: 10) ?? .infinity)
     }
     return zone?.category.color ?? ColorRGB(r: a, g: a, b: a)
   }
@@ -286,18 +290,20 @@ public enum SonyARRIStyleFalseColor {
     return referenceCode(sceneLinearLuma: y)
   }
   /// Native normalized S-Log3 channels are decoded before source-gamut linear Y.
+  /// The table's purple keeps its published floor, code 0 (MATH.md 4.3): a negative
+  /// reference code here is also a saturated colour whose source-gamut Y is negative
+  /// (S-Gamut3.Cine weights blue negatively), not only a crushed black.
   public static func category(rgb: ColorRGB, gamut: ColorGamut) -> ARRIFalseColorCategory? {
-    guard let code = referenceCode(rgb: rgb, gamut: gamut) else { return nil }
+    guard let code = referenceCode(rgb: rgb, gamut: gamut), code >= 0 else { return nil }
     return ARRIFalseColorProfile.logC3EI800.category(achromaticCode: code, range: .full)
   }
   /// Unclassified pixels retain their original native S-Log3 achromatic signal.
   /// Category colors are display colors and must bypass the viewing LUT.
   public static func color(rgb: ColorRGB, gamut: ColorGamut) -> ColorRGB? {
-    guard let code = referenceCode(rgb: rgb, gamut: gamut),
+    guard referenceCode(rgb: rgb, gamut: gamut) != nil,
       let a = ColorMath.signalLuma(rgb, matrix: .bt709), a.isFinite
     else { return nil }
-    return ARRIFalseColorProfile.logC3EI800.category(achromaticCode: code, range: .full)?.color
-      ?? ColorRGB(r: a, g: a, b: a)
+    return category(rgb: rgb, gamut: gamut)?.color ?? ColorRGB(r: a, g: a, b: a)
   }
 }
 public struct ARRIFalseColorZone: Equatable, Sendable {

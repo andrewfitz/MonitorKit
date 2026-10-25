@@ -107,13 +107,22 @@ struct ValueSlider: View {
     .accessibilityLabel(title)
     .accessibilityValue(format(value))
     .accessibilityAdjustableAction { direction in
-      let s = step ?? (range.upperBound - range.lowerBound) / 20
       switch direction {
-      case .increment: value = min(range.upperBound, value + s)
-      case .decrement: value = max(range.lowerBound, value - s)
+      case .increment: value = Self.adjusted(value, increment: true, in: range, step: step)
+      case .decrement: value = Self.adjusted(value, increment: false, in: range, step: step)
       @unknown default: break
       }
     }
+  }
+
+  /// One VoiceOver step from `value`, kept in `range`, never against the
+  /// direction asked: Core keeps some values beyond a slider's range (a pinch
+  /// zoom past 16×, a host's zebra level), and clamping those to the range
+  /// would turn an increment into a drop.
+  static func adjusted(_ value: Double, increment: Bool, in range: ClosedRange<Double>, step: Double?) -> Double {
+    let s = step ?? (range.upperBound - range.lowerBound) / 20
+    if increment { return max(value, min(range.upperBound, value + s)) }
+    return min(value, max(range.lowerBound, value - s))
   }
 }
 

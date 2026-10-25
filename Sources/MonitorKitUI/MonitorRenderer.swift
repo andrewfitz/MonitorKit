@@ -95,6 +95,8 @@ public final class MonitorRenderer {
   private let pass4 = MTL4RenderPassDescriptor()
   private var usedMetal4 = false
   private let scopeBuild = ScopeEngineBuild()
+  /// What the handles record as their publisher: which publication is this renderer's.
+  let publisher = MonitorPublisher()
   private var scopeBuildState = ScopeBuildState.idle
 
   enum ScopeBuildState { case idle, building, failed }
@@ -479,10 +481,16 @@ public final class MonitorRenderer {
     var publishedStatus: MonitorStatus?
     var publishedLayout: MonitorLayout?
     var publishedViewport: MonitorViewport?
-    init(surface: MonitorSurface, source: SourceState, pass: MonitorPass) {
+    init(surface: MonitorSurface, source: SourceState, pass: MonitorPass, renderer: MonitorRenderer) {
       self.surface = surface
       self.source = source
       self.pass = pass
+      // What the handle still holds from this renderer's draw before the
+      // surface left the scene, or from a renderer that is gone: cleared if
+      // this one draws nothing. Another live view's publication is left alone.
+      let held = surface.publication(for: renderer.publisher)
+      publishedLayout = held.layout
+      publishedViewport = held.viewport
     }
   }
 
@@ -512,11 +520,17 @@ public final class MonitorRenderer {
     var prepared = false
     var publishedGraticule: ScopeGraticule?
     var publishedViewport: MonitorViewport?
-    init(overlay: MonitorScopeOverlay, source: SourceState, accumulator: ScopeAccumulator, renderer: ScopeRenderer) {
+    init(
+      overlay: MonitorScopeOverlay, source: SourceState, accumulator: ScopeAccumulator, renderer: ScopeRenderer,
+      owner: MonitorRenderer
+    ) {
       self.overlay = overlay
       self.source = source
       self.accumulator = accumulator
       self.renderer = renderer
+      // As for a surface: a viewport the handle still holds from this renderer
+      // (or one that is gone) is cleared if this one draws nothing.
+      publishedViewport = overlay.publishedViewport(for: owner.publisher)
     }
   }
 
@@ -622,7 +636,7 @@ public final class MonitorRenderer {
       if let old = surfaces.first(where: { $0.surface === surface }), old.source === src {
         nextSurfaces.append(old)
       } else {
-        nextSurfaces.append(SurfaceState(surface: surface, source: src, pass: engine.makePass()))
+        nextSurfaces.append(SurfaceState(surface: surface, source: src, pass: engine.makePass(), renderer: self))
       }
     }
     var nextOverlays: [OverlayState] = []
@@ -636,7 +650,8 @@ public final class MonitorRenderer {
       do {
         let accumulator = try scopes.makeAccumulator(settings: overlay.settings)
         nextOverlays.append(
-          OverlayState(overlay: overlay, source: src, accumulator: accumulator, renderer: scopes.makeRenderer()))
+          OverlayState(
+            overlay: overlay, source: src, accumulator: accumulator, renderer: scopes.makeRenderer(), owner: self))
         overlay.publish(statisticsReader: accumulator.statisticsReader)
       } catch {
         record(error)
@@ -995,7 +1010,7 @@ public final class MonitorRenderer {
       if s.viewport == nil, s.publishedLayout != nil || s.publishedViewport != nil {
         let empty = MonitorStatus()
         let statusDiffers = s.publishedStatus != empty
-        s.surface.publish(status: empty, layout: nil, viewport: nil)
+        s.surface.publish(status: empty, layout: nil, viewport: nil, by: publisher)
         s.publishedStatus = empty
         s.publishedLayout = nil
         s.publishedViewport = nil
@@ -1153,7 +1168,7 @@ public final class MonitorRenderer {
       if measures != o.measures { needsRegroup = true }
       o.measures = measures
       if !o.draws, o.publishedViewport != nil {
-        o.overlay.publish(graticule: nil, viewport: nil)
+        o.overlay.publish(graticule: nil, viewport: nil, by: publisher)
         o.publishedViewport = nil
       }
     }
@@ -1235,7 +1250,8 @@ public final class MonitorRenderer {
     let layout = s.pass.layout
     let statusDiffers = s.publishedStatus != s.pass.status
     guard statusDiffers || layout != s.publishedLayout || viewport != s.publishedViewport else { return }
-    s.surface.publish(status: statusDiffers ? s.pass.status : nil, layout: layout, viewport: viewport)
+    s.surface.publish(
+      status: statusDiffers ? s.pass.status : nil, layout: layout, viewport: viewport, by: publisher)
     if statusDiffers { s.publishedStatus = s.pass.status }
     s.publishedLayout = layout
     s.publishedViewport = viewport
@@ -1245,7 +1261,8 @@ public final class MonitorRenderer {
   private func publish(_ o: OverlayState, viewport: MonitorViewport) {
     let graticuleDiffers = o.publishedGraticule != o.renderer.graticule
     guard graticuleDiffers || viewport != o.publishedViewport else { return }
-    o.overlay.publish(graticule: graticuleDiffers ? o.renderer.graticule : nil, viewport: viewport)
+    o.overlay.publish(
+      graticule: graticuleDiffers ? o.renderer.graticule : nil, viewport: viewport, by: publisher)
     if graticuleDiffers { o.publishedGraticule = o.renderer.graticule }
     o.publishedViewport = viewport
     if graticuleDiffers { graticuleChanged = true }

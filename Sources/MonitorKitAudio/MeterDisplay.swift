@@ -250,7 +250,7 @@ extension AudioMeterSnapshot {
   /// Any channel's over latch (`AudioChannelLevels.isOver`).
   public func isOver(maximumTruePeak: Float = -1) -> Bool {
     var c = 0
-    while c < channelCount {
+    while c < storedChannelCount {
       if channels[c].isOver(maximumTruePeak: maximumTruePeak) { return true }
       c += 1
     }
@@ -329,7 +329,7 @@ public enum MeterText {
   /// "no audio" when not `present`.
   public static func peakSummary(_ snapshot: AudioMeterSnapshot, channels: Int, present: Bool = true) -> String {
     guard present else { return "no audio" }
-    let n = Swift.min(channels, snapshot.channelCount)
+    let n = Swift.min(channels, snapshot.storedChannelCount)
     guard n > 0 else { return "no reading" }
     var parts: [String] = []
     for c in 0..<n {

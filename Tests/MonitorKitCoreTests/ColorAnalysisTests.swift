@@ -161,24 +161,38 @@ final class ColorAnalysisTests: XCTestCase {
   }
   func testARRIExactPublishedBoundariesAllProfilesAndRanges() {
     // Table 9/25 independently transcribed checkpoints; lower inclusive, upper exclusive.
+    // Red is open-ended upward and purple downward (MATH.md 4.2), not the published
+    // A' = 1.0 (940/1023) and 64/0.
     let fixtures: [(ARRIFalseColorProfile, CodeRange, [Double])] = [
-      (.logC3EI800, .legal, [878, 940, 857, 878, 461, 480, 397, 415, 152, 172, 64, 152]),
-      (.logC3EI800, .full, [951, 1023, 926, 951, 464, 486, 389, 410, 103, 127, 0, 103]),
-      (.alexa35LogC4EI800, .legal, [808, 940, 789, 808, 351, 366, 300, 315, 149, 159, 64, 149]),
-      (.alexa35LogC4EI800, .full, [868, 1023, 846, 868, 335, 353, 276, 293, 99, 111, 0, 99]),
+      (.logC3EI800, .legal, [878, .infinity, 857, 878, 461, 480, 397, 415, 152, 172, -.infinity, 152]),
+      (.logC3EI800, .full, [951, .infinity, 926, 951, 464, 486, 389, 410, 103, 127, -.infinity, 103]),
+      (.alexa35LogC4EI800, .legal, [808, .infinity, 789, 808, 351, 366, 300, 315, 149, 159, -.infinity, 149]),
+      (.alexa35LogC4EI800, .full, [868, .infinity, 846, 868, 335, 353, 276, 293, 99, 111, -.infinity, 99]),
     ]
     let categories: [ARRIFalseColorCategory] = [.red, .yellow, .pink, .green, .blue, .purple]
     for (profile, range, bounds) in fixtures {
       for (i, category) in categories.enumerated() {
         let low = bounds[2 * i]
         let high = bounds[2 * i + 1]
-        XCTAssertEqual(profile.category(achromaticCode: low, range: range), category)
-        XCTAssertEqual(profile.category(achromaticCode: high.nextDown, range: range), category)
-        XCTAssertNotEqual(profile.category(achromaticCode: high, range: range), category)
-        XCTAssertNotEqual(profile.category(achromaticCode: low.nextDown, range: range), category)
+        if low.isFinite {
+          XCTAssertEqual(profile.category(achromaticCode: low, range: range), category)
+          XCTAssertNotEqual(profile.category(achromaticCode: low.nextDown, range: range), category)
+        }
+        if high.isFinite {
+          XCTAssertEqual(profile.category(achromaticCode: high.nextDown, range: range), category)
+          XCTAssertNotEqual(profile.category(achromaticCode: high, range: range), category)
+        }
       }
-      XCTAssertNil(profile.category(achromaticCode: range == .legal ? 940 : 1023, range: range))
-      XCTAssertNil(profile.category(achromaticCode: -1, range: range))
+      // The container ceiling and super-whites are clipped highlights; the floor and
+      // sub-blacks are crushed blacks.
+      let ceiling: Double = range == .legal ? 940 : 1023
+      XCTAssertEqual(profile.category(achromaticCode: ceiling, range: range), .red)
+      XCTAssertEqual(profile.category(achromaticCode: 1023, range: range), .red)
+      let floor: Double = range == .legal ? 64 : 0
+      XCTAssertEqual(profile.category(achromaticCode: floor, range: range), .purple)
+      XCTAssertEqual(profile.category(achromaticCode: 4, range: range), .purple)
+      XCTAssertEqual(profile.category(achromaticCode: -1, range: range), .purple)
+      XCTAssertNil(profile.category(achromaticCode: -.infinity, range: range))
     }
     XCTAssertEqual(ARRIFalseColorCategory.pink.color, ColorRGB(r: 1, g: 0.7, b: 0.7))
     XCTAssertEqual(ARRIFalseColorCategory.purple.color, ColorRGB(r: 0.7, g: 0, b: 1))

@@ -314,7 +314,8 @@ public final class ScopeAccumulator {
   }
 
   /// Shapes the bins for `frame` and computes this accumulation's parameters.
-  /// Changes nothing a reader sees until `finish`.
+  /// Publishes nothing until `finish` except reshaped `bins` and `layout`, which
+  /// `hasData` marks unusable meanwhile.
   func begin(_ frame: MonitorFrame, burnInLUT: MonitorLUT?, monitorLUT: MonitorLUT?) throws -> Pass {
     let s = settings
     retired.age()

@@ -75,7 +75,9 @@ public struct MonitorFrame: @unchecked Sendable {
   /// Identifies the picture this frame holds, for analysis that must belong to
   /// it (the focus mask). Every new `MonitorFrame` gets a fresh value, so wrap
   /// each frame; a host that reuses one value across pictures of the same
-  /// texture sets a new `id` (e.g. a frame counter) for each picture.
+  /// texture sets a new `id` (e.g. a frame counter) for each picture. The values
+  /// MonitorKit assigns (new frames, Freeze copies) have the top bit set, so they
+  /// never equal a host counter's.
   public var id: UInt64
   /// The pixel layout of the textures (v210, NV12, BGRA and so on).
   public let layout: PixelLayout
@@ -125,7 +127,10 @@ public struct MonitorFrame: @unchecked Sendable {
   /// A `MonitorTextureCache` frame's second plane's cache entry (biplanar chroma).
   var secondPlanes: FrozenPlanes?
 
-  private static let ids = Atomic<UInt64>(0)
+  /// From 2^63: a host counter (from 0 or 1) and the library's own values share
+  /// `id`, and a collision would let the focus mask of one picture (a frozen
+  /// frame's) pass for another's (the live frame after it with that number).
+  private static let ids = Atomic<UInt64>(1 << 63)
   static func nextID() -> UInt64 { ids.add(1, ordering: .relaxed).newValue }
 
   /// Wraps textures the host already has (formats in the table above). Throws if

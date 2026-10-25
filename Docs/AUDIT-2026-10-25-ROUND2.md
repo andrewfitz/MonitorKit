@@ -1,6 +1,6 @@
 # MonitorKit follow-up audit and performance pass — 2026-10-25
 
-Scope: `/Users/andrew/Projects/ai/MonitorKit`. This follows [round one](AUDIT-2026-10-25.md). All twenty fresh GPT-6.1 Sol reviewers audited the same twenty areas listed there, without inheriting the first review's conclusions. The coordinator integrated findings, reviewed numerical changes and ran repository-wide verification. MeterDisplay and LevelMeterView received additional explicit coverage during the performance pass. Changes remain uncommitted.
+Scope: `/Users/andrew/Projects/ai/MonitorKit`. This follows [round one](AUDIT-2026-10-25.md). All twenty fresh GPT-6.1 Sol reviewers audited the same twenty areas listed there, without inheriting the first review's conclusions. The coordinator integrated findings, reviewed numerical changes and ran repository-wide verification. MeterDisplay and LevelMeterView received additional explicit coverage during the performance pass. These changes were committed as 24356e5.
 
 ## Correctness changes
 

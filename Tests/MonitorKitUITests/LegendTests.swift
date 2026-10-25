@@ -87,8 +87,13 @@ final class LegendTests: XCTestCase {
     let arri = try XCTUnwrap(FalseColorLegend(settings: settings(.arriStyleSLog3)))
     XCTAssertEqual(arri.unit, .code)
     XCTAssertEqual(arri.entries.first?.name, "White clipping")
-    XCTAssertEqual(arri.entries.first?.range, "951 – 1023")
+    XCTAssertEqual(arri.entries.first?.range, "≥ 951", "red is open-ended upward")
     XCTAssertEqual(arri.entries.last?.name, "Black clipping")
+    XCTAssertEqual(arri.entries.last?.range, "0 – 103", "the ARRI-style adaptation keeps purple's floor")
+    let logC3 = SignalDescription(range: .legal, encoding: .log(LogEncoding(curve: .arriLogC3, gamut: .arriWideGamut3)))
+    let literal = try XCTUnwrap(FalseColorLegend(settings: settings(.arriLogC), signal: logC3))
+    XCTAssertEqual(literal.entries.first?.range, "≥ 878", "red is open-ended upward")
+    XCTAssertEqual(literal.entries.last?.range, "< 152", "purple is open-ended downward")
 
     let stops = try XCTUnwrap(FalseColorLegend(settings: settings(.custom, unit: .stops, bands: [
       FalseColorBand(lower: -.infinity, upper: Double(Float(-3).nextUp), color: ColorRGB(r: 0, g: 0, b: 0)),

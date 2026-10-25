@@ -404,13 +404,20 @@ uint2 mk_clampPixel(float2 p, constant mk_FrameParams& f) {
   return uint2(clamp(floor(p), float2(0), float2(f.shape.y - 1, f.shape.z - 1)));
 }
 
+// A non-finite float RGB sample reads as NaN → 0, ±inf → ±65504 (the widest value
+// any target keeps): inf - inf in a filter, or a NaN, would otherwise reach the
+// tools and overlay mixes. Finite values, and every unorm value, are unchanged.
+inline float3 mk_finiteRGB(float3 v) {
+  return select(select(v, clamp(v, -65504.0f, 65504.0f), isinf(v)), float3(0), isnan(v));
+}
+
 // Codes of pixel xy for code-space filtering: (Y', Cb - centre, Cr - centre) in
 // stored codes, or the stored RGB. Decoding is affine in these, so a weighted sum
 // of codes decodes to the same weighted sum of pictures with one conversion, and
 // centred chroma keeps neutral sums exactly neutral.
 float3 mk_tapCodes(uint2 xy, thread const mk_Inputs& in) {
   constant mk_FrameParams& f = in.frame;
-  if (MK_LAYOUT(f) == MK_RGB) return in.luma.read(xy).rgb;
+  if (MK_LAYOUT(f) == MK_RGB) return mk_finiteRGB(in.luma.read(xy).rgb);
   float3 c = MK_LAYOUT(f) == MK_V210 && !f.options.x
                ? mk_v210PixelCodes(in.packed, xy, f)
                : float3(mk_lumaCode(in.packed, in.luma, xy, f), mk_chromaCode(in.packed, in.chroma, xy, f));
@@ -449,7 +456,7 @@ float4 mk_decodeCodes(float3 c, constant mk_FrameParams& f, float3 inverse) {
 }
 
 // The mean of `count` filter taps' codes: an exact quotient by the count (its
-// reciprocal is the axis's), except float RGB, whose values may be non-finite.
+// reciprocal is the axis's), except float RGB, whose values are not integral codes.
 inline float3 mk_mean(float3 sum, float count, float inverse, constant mk_FrameParams& f) {
   return MK_LAYOUT(f) == MK_RGB && f.codeScale.w != 0 ? sum / count : mk_quotient(sum, count, inverse);
 }
@@ -738,8 +745,9 @@ float3 mk_present(float3 v, constant mk_PassParams& p) {
 float3 mk_bands(float value, float3 fallback, constant mk_FrameParams& f, thread const mk_Inputs& in) {
   constant mk_PassParams& p = in.pass;
   // Scanned from the last band without an early exit, so the tests do not wait on each other.
+  // The count clamped to the 16 bands a hand-filled PassParameters can hold.
   int band = -1;
-  for (int i = int(p.modes.z) - 1; i >= 0; i--)
+  for (int i = int(min(p.modes.z, 16u)) - 1; i >= 0; i--)
     if (value >= p.bandEdges[i].x && value < p.bandEdges[i].y) band = i;
   return band >= 0 ? p.bandColors[band].rgb : mk_present(mk_displayTransform(fallback, f, in), p);
 }
@@ -880,12 +888,14 @@ float2 mk_axisStrokes(float2 p, uint begin, uint end, uint axis, constant mk_Gui
 }
 
 float2 mk_guideCoverage(float2 p, constant mk_Guides& g) {
-  uint nv = g.counts.x, nh = g.counts.y;
+  // Counts clamped to the arrays, as GuideParameters.updateCells does: a
+  // hand-filled struct may hold anything, and a read past it faults the GPU.
+  uint nv = min(g.counts.x, 128u), nh = min(g.counts.y, 128u - nv), others = min(g.counts.z, 8u);
   float2 cover = 0;
   if (mk_guideCell(p.x, 0, g)) cover = mk_axisStrokes(p, 0, nv, 0, g);
   if (mk_guideCell(p.y, 1, g)) cover = max(cover, mk_axisStrokes(p, nv, nv + nh, 1, g));
   float o = g.reach.y;
-  for (uint i = 0; i < g.counts.z; i++) {
+  for (uint i = 0; i < others; i++) {
     float4 e = g.others[2 * i];
     float hw = g.others[2 * i + 1].x;
     float2 a = e.xy, ab = e.zw - a;
@@ -997,6 +1007,11 @@ float4 mk_pictureAt(float2 position, thread const mk_Inputs& in, texture2d<float
     if (logFalseColor) c = mk_logFalseColor(sample, in);
     else if (stageFalseColor) c = mk_stageFalseColor(s, in);
     else c = mk_present(mk_adjust(mk_displayTransform(mk_stage(s, MK_PICTURE_STAGE), pictureReading, in), p), p);
+    // Finite but huge float values can still overflow on the way (contrast on a
+    // value near FLT_MAX, written signal-native with no target encode to clamp
+    // it): mix(inf, colour, a) is NaN, which would paint an overlay black. Only
+    // non-finite values change, so finite pixels mix as before.
+    c = mk_finiteRGB(c);
     // Overlays mix in target values with colours encoded for the target.
     {
       int2 px = int2(corner);

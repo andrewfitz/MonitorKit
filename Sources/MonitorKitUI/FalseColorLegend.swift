@@ -34,7 +34,7 @@ public struct FalseColorLegend: Equatable, Sendable {
     public var lower: Double
     public var upper: Double
     public var name: String
-    /// The range as printed: "38.4–43.4", "≥ 99", "< 2.5".
+    /// The range as printed: "38.4 – 43.4", "≥ 99", "< 2.5".
     public var range: String
     /// The swatch's label in the captioned legend: "Green: 38.9–42.2 IRE" for
     /// Sony, else "name: range".

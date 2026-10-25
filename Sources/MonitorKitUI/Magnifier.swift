@@ -45,13 +45,21 @@ public enum MonitorMagnifier {
     var v = m
     let image = layout.imageRect
     let flips = flips(layout)
-    func axis(_ d: Double, _ origin: Double, _ size: Double, _ view: Double, _ flip: Bool) -> Double {
-      let shown = (view / 2 - origin) / size
+    func axis(_ d: Double, _ center: Double, _ size: Double, _ view: Double, _ flip: Bool) -> Double {
+      // The centre the layout shows, from the stored one clamped as the layout
+      // clamps it, not from the image origin: pixel-exact rounds that down to a
+      // whole pixel, which lost every drag under a pixel one way and doubled it
+      // the other. The stored centre keeps the fraction for the next event.
+      let c = center.isFinite ? min(1, max(0, center)) : 0.5
+      // Where the picture fits the view nothing moves: the centre is kept for
+      // a later zoom rather than reset by a drag along the other axis.
+      guard size > view else { return c }
+      let shown = clampCenter(flip ? 1 - c : c, size: size, view: view)
       let t = clampCenter(shown - d / size, size: size, view: view)
       return flip ? 1 - t : t
     }
-    v.centerX = axis(delta.dx, image.x, image.width, layout.viewportWidth, flips.x)
-    v.centerY = axis(delta.dy, image.y, image.height, layout.viewportHeight, flips.y)
+    v.centerX = axis(delta.dx, m.centerX, image.width, layout.viewportWidth, flips.x)
+    v.centerY = axis(delta.dy, m.centerY, image.height, layout.viewportHeight, flips.y)
     return v
   }
 

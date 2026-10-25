@@ -182,7 +182,14 @@ final class MonitorPixelTests: XCTestCase {
     for profile in ARRIFalseColorProfile.allCases {
       let curve: LogCurve = profile == .logC3EI800 ? .arriLogC3 : .arriLogC4
       for range in [CodeRange.legal, .full] {
-        let codes = profile.zones(range: range).flatMap { [max(0, Int($0.lower) - 1), Int($0.lower), Int($0.upper) - 1, Int($0.upper)] }
+        // Red is open-ended upward and purple downward (MATH.md 4.2): red's top is the
+        // container's nominal peak and code 1023, purple's bottom the floor and code 4.
+        let peak = range == .legal ? 940 : 1023, floor = range == .legal ? 64 : 0
+        let codes = profile.zones(range: range).flatMap { zone -> [Int] in
+          let bottom = zone.lower.isFinite ? [max(0, Int(zone.lower) - 1), Int(zone.lower)] : [4, floor]
+          let top = zone.upper.isFinite ? [Int(zone.upper) - 1, Int(zone.upper)] : [peak, 1023]
+          return bottom + top
+        }
         let picture = SyntheticFrame.neutral(.v210, width: codes.count * 6, height: 2) { x, _ in codes[x / 6] }
         let frame = try Fixtures.wrapped(gpu, picture, signal: Fixtures.signal(Fixtures.logC(curve), range: range))
         var state = MonitorState()

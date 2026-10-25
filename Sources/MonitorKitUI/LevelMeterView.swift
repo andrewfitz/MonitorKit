@@ -158,17 +158,20 @@ public struct LevelMeterView: View {
     while c < n {
       let offset = CGFloat(c) * (thickness + gap)
       let channel = channels[c]
+      // A NaN bar is no reading: `min(upper, .nan)` is `upper`, which would light every zone.
+      let bar = channel.bar.isNaN ? 0 : channel.bar
       emit(rect(offset, 0, 1), .well)
       var z = 0
       while z < spans.count {
         let span = spans[z]
-        let top = min(span.upper, channel.bar)
+        let top = min(span.upper, bar)
         if top > span.lower { emit(rect(offset, span.lower, top), .lit(span.kind)) }
-        let bottom = max(span.lower, channel.bar)
+        let bottom = max(span.lower, bar)
         if span.upper > bottom { emit(rect(offset, bottom, span.upper), .unlit(span.kind)) }
         z += 1
       }
-      if let hold = channel.hold {
+      // As `MeterScale.layout` places it: a line only above the bottom (not NaN or −∞).
+      if let hold = channel.hold, hold > 0 {
         let half = Double(holdWidth / 2 / along)
         let p = min(max(hold, half), 1 - half)
         emit(rect(offset, p - half, p + half), .hold(channel.holdZone))
@@ -304,7 +307,11 @@ struct LevelMeterSource {
             bars[c].ingest(bar, at: now)
             // A peak reset (here, by the host or from VoiceOver) lowers the
             // maximum or the clip count, which otherwise only grow: start the line over.
-            if levels.truePeakMax < maxima[c] || levels.clipCount < clips[c] {
+            // Under an endless hold the meter's own hold only falls on a reset too,
+            // the one sign of it for sample-peak bars on a meter without true peak.
+            if levels.truePeakMax < maxima[c] || levels.clipCount < clips[c]
+              || (!holds[c].holdTime.isFinite && hold < meterHolds[c])
+            {
               holds[c].reset()
               meterHolds[c] = -.infinity
             }

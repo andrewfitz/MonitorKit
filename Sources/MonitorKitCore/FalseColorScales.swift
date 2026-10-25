@@ -88,7 +88,10 @@ public enum FalseColorTable {
         FalseColorBand(lower: $0.lowerIRE, upper: $0.upperIRE, color: $0.category.color)
       }
     case .arriStyleSLog3:
-      return arriBands(.logC3EI800, range: .full)
+      // Purple keeps its published floor, as `SonyARRIStyleFalseColor.category` does.
+      return arriBands(.logC3EI800, range: .full).map {
+        FalseColorBand(lower: max($0.lower, 0), upper: $0.upper, color: $0.color)
+      }
     case .arriLogC:
       guard let curve = arriCurve, let profile = arriProfile(for: curve) else { return [] }
       return arriBands(profile, range: arriFullRange ? .full : .legal)

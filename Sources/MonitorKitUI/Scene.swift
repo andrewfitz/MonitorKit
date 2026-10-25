@@ -51,6 +51,12 @@ public struct MonitorRegion: Equatable, Sendable {
   }
 }
 
+/// Identifies the renderer that published to a surface or scope handle, held
+/// weakly there: it lives exactly as long as its renderer.
+final class MonitorPublisher: Sendable {
+  init() {}
+}
+
 /// One video feed shown in a view: its latest frame and its LUTs.
 ///
 /// Hand it frames from any thread (the capture or delivery thread): `submit`
@@ -153,6 +159,8 @@ public final class MonitorSurface: Sendable {
     var status = MonitorStatus()
     var layout: MonitorLayout?
     var viewport: MonitorViewport?
+    /// The renderer that published last (nil: none, or it is gone).
+    weak var publisher: MonitorPublisher?
   }
   private let shared: Mutex<Shared>
 
@@ -224,11 +232,24 @@ public final class MonitorSurface: Sendable {
 
   var revision: UInt64 { shared.withLock { $0.revision } }
 
-  func publish(status: MonitorStatus?, layout: MonitorLayout?, viewport: MonitorViewport?) {
+  func publish(
+    status: MonitorStatus?, layout: MonitorLayout?, viewport: MonitorViewport?, by publisher: MonitorPublisher
+  ) {
     shared.withLock {
       if let status { $0.status = status }
       $0.layout = layout
       $0.viewport = viewport
+      $0.publisher = publisher
+    }
+  }
+
+  /// What the handle holds if `renderer` may take it as its own: it published
+  /// it, or no renderer that still exists did. Another live renderer's
+  /// publication is not this one's to clear.
+  func publication(for renderer: MonitorPublisher) -> (layout: MonitorLayout?, viewport: MonitorViewport?) {
+    shared.withLock { s in
+      guard s.publisher == nil || s.publisher === renderer else { return (nil, nil) }
+      return (s.layout, s.viewport)
     }
   }
 }
@@ -254,6 +275,8 @@ public final class MonitorScopeOverlay: Sendable {
     var graticule: ScopeGraticule?
     var viewport: MonitorViewport?
     var statisticsReader: ScopeStatisticsReader?
+    /// The renderer that published the graticule and viewport last (nil: none, or it is gone).
+    weak var publisher: MonitorPublisher?
   }
   private let shared: Mutex<Shared>
 
@@ -370,11 +393,17 @@ public final class MonitorScopeOverlay: Sendable {
     }
   }
 
-  func publish(graticule: ScopeGraticule?, viewport: MonitorViewport?) {
+  func publish(graticule: ScopeGraticule?, viewport: MonitorViewport?, by publisher: MonitorPublisher) {
     shared.withLock {
       if let graticule { $0.graticule = graticule }
       $0.viewport = viewport
+      $0.publisher = publisher
     }
+  }
+
+  /// The viewport the handle holds if `renderer` may take it as its own (as for a surface).
+  func publishedViewport(for renderer: MonitorPublisher) -> MonitorViewport? {
+    shared.withLock { s in s.publisher == nil || s.publisher === renderer ? s.viewport : nil }
   }
 
   func publish(statisticsReader: ScopeStatisticsReader) {

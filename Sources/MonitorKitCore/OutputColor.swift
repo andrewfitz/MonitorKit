@@ -77,6 +77,17 @@ public struct MonitorOutputColor: Codable, Hashable, Sendable {
     headroom = c.lenient(.headroom, headroom)
     self = normalized()
   }
+  /// Writes the normalized values (JSON has no NaN or infinity, so a non-finite
+  /// field would otherwise throw), which is what decoding produces anyway.
+  public func encode(to encoder: Encoder) throws {
+    let v = normalized()
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(v.primaries, forKey: .primaries)
+    try c.encode(v.encoding, forKey: .encoding)
+    try c.encode(v.referenceWhite, forKey: .referenceWhite)
+    try c.encode(v.hlgNominalPeak, forKey: .hlgNominalPeak)
+    try c.encode(v.headroom, forKey: .headroom)
+  }
 
   /// Values clamped to their ranges, non-finite values reset.
   public func normalized() -> MonitorOutputColor {

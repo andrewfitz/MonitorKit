@@ -102,7 +102,27 @@ public final class MonitorEngine: @unchecked Sendable {
     case render(PipelineKey), compute(PipelineKey), focus(FocusKey), copy(Bool)
   }
   private let pendingPipelines = Mutex<Set<BuildKey>>([])
+  /// Asynchronous specializations that failed: not started again for the
+  /// engine's lifetime (the pass keeps the stand-in, which draws the same pixels),
+  /// rather than once a frame. A synchronous build of the key (`warmUp`,
+  /// `.synchronous`) still runs, and its success is what later lookups find.
+  private let failedPipelines = Mutex<Set<BuildKey>>([])
+  private let asynchronousBuilds = Atomic<Int>(0)
+  /// Asynchronous specializations started (render and compute), for tests.
+  var asynchronousBuildsStarted: Int { asynchronousBuilds.load(ordering: .relaxed) }
+  /// Asynchronous specializations that failed, for tests.
+  var failedPipelineCount: Int { failedPipelines.withLock { $0.count } }
   private let buildFinished = NSCondition()
+  /// The pending builds owned by a background task or Metal completion handler.
+  private let asynchronousOwners = Mutex<Set<BuildKey>>([])
+  /// Seconds a synchronous caller waits for a background build of its key before
+  /// it compiles the pipeline itself (internal, so tests can shorten it). A task
+  /// owner needs a free cooperative-pool thread to finish: callers blocked here
+  /// must never be all that stands between it and one.
+  let asynchronousJoinTimeout = Mutex<Double>(5)
+  /// Synchronous builds that gave up waiting for a background owner, for tests.
+  private let abandonedJoins = Atomic<Int>(0)
+  var asynchronousJoinsAbandoned: Int { abandonedJoins.load(ordering: .relaxed) }
   private let focusPipelines = Mutex<[FocusKey: MTLComputePipelineState]>([:])
   private let computePipelines = Mutex<[PipelineKey: MTLComputePipelineState]>([:])
   private let copyPipelines = Mutex<(uint: MTLComputePipelineState?, float: MTLComputePipelineState?)>((nil, nil))
@@ -388,7 +408,8 @@ public final class MonitorEngine: @unchecked Sendable {
   /// init (pipelines and placeholders excluded). Constant in steady state.
   public var resourcesCreated: Int { createdResources.load(ordering: .relaxed) }
 
-  /// Render pipelines built so far, all-tools and specialized.
+  /// Picture pipelines built so far (render, and compute for `encodeCompute`),
+  /// all-tools and specialized. Focus-analysis and Freeze kernels are not counted.
   public var pipelinesBuilt: Int { builtPipelines.load(ordering: .relaxed) }
   /// Picture pipelines compiled on the calling thread (by `prepare`, a first frame
   /// of a new target format or layout, or `.synchronous` specialization). With
@@ -541,8 +562,8 @@ public final class MonitorEngine: @unchecked Sendable {
   func renderPipeline(_ key: PipelineKey) throws -> MTLRenderPipelineState {
     if let cached = renderPipelines.withLock({ $0[key] }) { return cached }
     let buildKey = BuildKey.render(key)
-    beginBuild(buildKey)
-    defer { finishBuild(buildKey) }
+    let owns = beginBuild(buildKey)
+    defer { if owns { finishBuild(buildKey) } }
     if let cached = renderPipelines.withLock({ $0[key] }) { return cached }
     let state: MTLRenderPipelineState
     do {
@@ -579,11 +600,13 @@ public final class MonitorEngine: @unchecked Sendable {
     case .asynchronous:
       if let cached = renderPipelines.withLock({ $0[key] }) { return cached }
       let buildKey = BuildKey.render(key)
-      guard pendingPipelines.withLock({ $0.insert(buildKey).inserted }) else { return nil }
+      if failedPipelines.withLock({ $0.contains(buildKey) }) { return nil }
+      guard claimAsynchronous(buildKey) else { return nil }
       if let cached = renderPipelines.withLock({ $0[key] }) {
         finishBuild(buildKey)
         return cached
       }
+      asynchronousBuilds.add(1, ordering: .relaxed)
       if compiler != nil {
         // The compiler's asynchronous build (Metal's compiler threads) awaited from
         // a task; no thread or queue of the library's own.
@@ -593,17 +616,20 @@ public final class MonitorEngine: @unchecked Sendable {
             layout: key.layout, variant: key.variant, srgbTarget: key.target.colorPixelFormat.isSRGB, color: key.color))
           if let state = try? await makeRenderState(descriptor, compiler) {
             _ = store(state, for: key)
+            finish(key)
+          } else {
+            finishFailed(buildKey)
           }
-          finish(key)
         }
         return nil
       }
       let values = Self.constants(
         layout: key.layout, variant: key.variant, srgbTarget: key.target.colorPixelFormat.isSRGB, color: key.color)
       library.makeFunction(name: "mk_picture", constantValues: values) { [self] function, _ in
-        guard let function else { return finish(key) }
+        guard let function else { return finishFailed(buildKey) }
         device.makeRenderPipelineState(descriptor: descriptor(key, fragment: function)) { [self] state, _ in
-          if let state { _ = store(state, for: key) }
+          guard let state else { return finishFailed(buildKey) }
+          _ = store(state, for: key)
           finish(key)
         }
       }
@@ -611,33 +637,68 @@ public final class MonitorEngine: @unchecked Sendable {
     }
   }
 
-  /// Completes an asynchronous build, including a terminal failure.
+  /// Completes an asynchronous build that stored its pipeline.
   private func finish(_ key: PipelineKey) { finishBuild(.render(key)) }
 
-  /// Cold synchronous callers join an existing compiler task. Cache hits never
-  /// reach this condition, and different keys compile independently.
-  private func beginBuild(_ key: BuildKey) {
+  /// Completes an asynchronous specialization that failed: remembered, so the
+  /// next prepare does not start the same failing compile again (once a frame).
+  private func finishFailed(_ key: BuildKey) {
+    failedPipelines.withLock { _ = $0.insert(key) }
+    finishBuild(key)
+  }
+
+  /// Cold synchronous callers join an existing build of the key. Cache hits never
+  /// reach this condition, and different keys compile independently. True: the
+  /// caller owns the key and must `finishBuild` it. A synchronous owner is waited
+  /// for as long as it takes; a background owner only `asynchronousJoinTimeout`
+  /// seconds, after which the caller compiles without the key (false), so a
+  /// starved task pool or a lost completion never hangs the frame for good.
+  private func beginBuild(_ key: BuildKey) -> Bool {
+    let timeout = asynchronousJoinTimeout.withLock { $0 }
+    var deadline = Date(timeIntervalSinceNow: timeout)
     buildFinished.lock()
     defer { buildFinished.unlock() }
     while !pendingPipelines.withLock({ $0.insert(key).inserted }) {
-      buildFinished.wait()
+      if buildFinished.wait(until: deadline) { continue }
+      guard asynchronousOwners.withLock({ $0.contains(key) }) else {
+        deadline = Date(timeIntervalSinceNow: timeout)
+        continue
+      }
+      abandonedJoins.add(1, ordering: .relaxed)
+      return false
     }
+    return true
+  }
+
+  /// Takes `key` for a background build, or false when a build of it is pending.
+  private func claimAsynchronous(_ key: BuildKey) -> Bool {
+    buildFinished.lock()
+    defer { buildFinished.unlock() }
+    guard pendingPipelines.withLock({ $0.insert(key).inserted }) else { return false }
+    asynchronousOwners.withLock { _ = $0.insert(key) }
+    return true
   }
 
   private func finishBuild(_ key: BuildKey) {
     buildFinished.lock()
     pendingPipelines.withLock { _ = $0.remove(key) }
+    asynchronousOwners.withLock { _ = $0.remove(key) }
     buildFinished.broadcast()
     buildFinished.unlock()
   }
+
+  /// Tests only: holds the copy kernel's key as a background build that never
+  /// finishes, as a task starved of a pool thread would. `finishHeldCopyBuild` ends it.
+  func holdCopyBuildForTesting(integer: Bool) -> Bool { claimAsynchronous(.copy(integer)) }
+  func finishHeldCopyBuild(integer: Bool) { finishBuild(.copy(integer)) }
 
   /// The compute picture pipeline for `key` (its target's colour format only), built here if not cached.
   func computePipeline(_ key: PipelineKey) throws -> MTLComputePipelineState {
     let key = Self.computeKey(key)
     if let cached = computePipelines.withLock({ $0[key] }) { return cached }
     let buildKey = BuildKey.compute(key)
-    beginBuild(buildKey)
-    defer { finishBuild(buildKey) }
+    let owns = beginBuild(buildKey)
+    defer { if owns { finishBuild(buildKey) } }
     if let cached = computePipelines.withLock({ $0[key] }) { return cached }
     let state: MTLComputePipelineState
     do {
@@ -676,11 +737,13 @@ public final class MonitorEngine: @unchecked Sendable {
     case .asynchronous:
       if let cached = computePipelines.withLock({ $0[key] }) { return cached }
       let pendingKey = BuildKey.compute(key)
-      guard pendingPipelines.withLock({ $0.insert(pendingKey).inserted }) else { return nil }
+      if failedPipelines.withLock({ $0.contains(pendingKey) }) { return nil }
+      guard claimAsynchronous(pendingKey) else { return nil }
       if let cached = computePipelines.withLock({ $0[key] }) {
         finishBuild(pendingKey)
         return cached
       }
+      asynchronousBuilds.add(1, ordering: .relaxed)
       if compiler != nil {
         Task.detached(priority: .utility) { [self] in
           guard let compiler else { return }
@@ -688,7 +751,7 @@ public final class MonitorEngine: @unchecked Sendable {
             "mk_pictureKernel",
             Self.constants(layout: key.layout, variant: key.variant, srgbTarget: false, color: key.color))
           guard let state = try? await makeComputeState(d, compiler) else {
-            finishBuild(pendingKey)
+            finishFailed(pendingKey)
             return
           }
           _ = storeCompute(state, for: key)
@@ -699,12 +762,12 @@ public final class MonitorEngine: @unchecked Sendable {
       let values = Self.constants(layout: key.layout, variant: key.variant, srgbTarget: false, color: key.color)
       library.makeFunction(name: "mk_pictureKernel", constantValues: values) { [self] function, _ in
         guard let function else {
-          finishBuild(pendingKey)
+          finishFailed(pendingKey)
           return
         }
         device.makeComputePipelineState(function: function) { [self] state, _ in
           guard let state else {
-            finishBuild(pendingKey)
+            finishFailed(pendingKey)
             return
           }
           _ = storeCompute(state, for: key)
@@ -719,8 +782,8 @@ public final class MonitorEngine: @unchecked Sendable {
   func focusPipeline(_ key: FocusKey) throws -> MTLComputePipelineState {
     if let cached = focusPipelines.withLock({ $0[key] }) { return cached }
     let buildKey = BuildKey.focus(key)
-    beginBuild(buildKey)
-    defer { finishBuild(buildKey) }
+    let owns = beginBuild(buildKey)
+    defer { if owns { finishBuild(buildKey) } }
     if let cached = focusPipelines.withLock({ $0[key] }) { return cached }
     var variant = Variant.uber
     variant.luts = key.luts
@@ -738,8 +801,8 @@ public final class MonitorEngine: @unchecked Sendable {
   func copyPipeline(integer: Bool) throws -> MTLComputePipelineState {
     if let cached = cachedCopyPipeline(integer: integer) { return cached }
     let buildKey = BuildKey.copy(integer)
-    beginBuild(buildKey)
-    defer { finishBuild(buildKey) }
+    let owns = beginBuild(buildKey)
+    defer { if owns { finishBuild(buildKey) } }
     if let cached = cachedCopyPipeline(integer: integer) { return cached }
     return storeCopy(try makeComputeState(Self.copyFunction(integer: integer), nil), integer: integer)
   }
@@ -768,7 +831,7 @@ public final class MonitorEngine: @unchecked Sendable {
   private func buildCopyPipelinesAsynchronously() {
     for integer in [true, false] {
       let buildKey = BuildKey.copy(integer)
-      guard pendingPipelines.withLock({ $0.insert(buildKey).inserted }) else { continue }
+      guard claimAsynchronous(buildKey) else { continue }
       if compiler != nil {
         Task.detached(priority: .utility) { [self] in
           guard let compiler else { return }

@@ -2,6 +2,12 @@
 
 All notable changes to MonitorKit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, a minor version may change the public API; every such change is listed under **Changed** or **Removed**.
 
+## [Unreleased]
+
+### Fixed
+
+- `LoudnessEngine` no longer makes a dynamic exclusivity check on the audio thread. In unoptimized builds it called `swift_beginAccess` on every `process`, and on macOS 26 a thread's first such call allocates the runtime's exclusivity context, so the first callback on an audio thread allocated. MonitorKitAudio now has no `swift_beginAccess` in debug or release builds.
+
 ## [0.1.4] - 2026-10-25
 
 ### Fixed

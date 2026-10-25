@@ -234,7 +234,10 @@ final class LoudnessEngine {
   /// (b0 + b1 + b2) / (1 + a1 + a2) per section.
   private let dcGains: (shelf: Double, cascade: Double)
   /// Set by `primeFilters()`: the next `process` starts the cascade from its first sample.
-  private var primesFilters = false
+  /// Only the processing thread touches it. Unchecked: a dynamic exclusivity check here
+  /// made `process` call `swift_beginAccess`, whose first use on a thread allocates on
+  /// macOS 26 (every other mutable field lives behind `state`).
+  @exclusivity(unchecked) private var primesFilters = false
   /// Per active channel: the cascade's 2 * 2 + 2 delay values.
   private let delays: UnsafeMutablePointer<Double>
   /// Per active channel: K-weighted energy of the current tick.

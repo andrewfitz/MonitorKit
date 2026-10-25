@@ -162,7 +162,7 @@ public struct AudioMeterKinds: OptionSet, Sendable, Hashable {
   /// BS.1770-4 / EBU R 128 programme loudness over the configured channels.
   public static let loudness = AudioMeterKinds(rawValue: 1 << 5)
   /// Phase correlation of the programme's stereo pair, -1 to +1 (see
-  /// `AudioMeterSnapshot.correlation`). Needs at least two channels; three
+  /// `AudioMeterSnapshot.correlation`). Needs at least two channels; five
   /// vDSP passes per chunk.
   public static let correlation = AudioMeterKinds(rawValue: 1 << 6)
 

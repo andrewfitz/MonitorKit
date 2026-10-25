@@ -115,11 +115,12 @@ public struct AudioMeterSnapshot: Sendable, BitwiseCopyable {
   public var vuReferenceDBFS: Float
   public var ppmAlignmentDBFS: Float
   /// Phase correlation of the stereo pair (`AudioMeterConfiguration.correlationChannels`),
-  /// -1 (out of phase) to +1 (mono): the normalized cross-correlation
-  /// E[LR] / sqrt(E[L²] E[R²]) over an exponential window of
-  /// `correlationTime`. 0 when only one side carries signal. NaN when the
-  /// meter is off, there is one channel, or both sides are below -70 dBFS
-  /// (nothing to correlate).
+  /// -1 (out of phase) to +1 (mono): the Pearson correlation
+  /// cov(L, R) / sqrt(var(L) var(R)) over an exponential window of
+  /// `correlationTime`, so a DC offset neither biases it nor counts as
+  /// signal. 0 when only one side carries signal. NaN when the meter is off,
+  /// there is one channel, or both sides are below -70 dBFS RMS (nothing to
+  /// correlate).
   public var correlation: Float
 
   public init() {

@@ -273,3 +273,24 @@ final class MeterDisplayTests: XCTestCase {
     XCTAssertEqual(meter.snapshot().correlation, -1, accuracy: 1e-4)
   }
 }
+
+extension MeterDisplayTests {
+  /// A DC offset is not audio: it neither pulls the correlation towards +1
+  /// nor counts as signal.
+  func testCorrelationIgnoresDC() throws {
+    let frames = 96000
+    let noise = Signal.noise(amplitude: 0.01, frames: frames, seed: 3)
+    let other = Signal.noise(amplitude: 0.01, frames: frames, seed: 11)
+    // −40 dBFS of DC on both sides, about 5 dB above the noise (−45 dBFS RMS).
+    let offset: Float = 0.01
+    XCTAssertEqual(
+      try correlation(left: noise.map { $0 + offset }, right: other.map { $0 + offset }), 0, accuracy: 0.1,
+      "unrelated noise with a common offset")
+    XCTAssertEqual(
+      try correlation(left: noise.map { $0 + offset }, right: noise.map { $0 - offset }), 1, accuracy: 1e-3,
+      "the same noise with opposite offsets is still mono")
+    let dc = [Float](repeating: 0.25, count: frames)
+    XCTAssertTrue(try correlation(left: dc, right: dc).isNaN, "DC alone is nothing to correlate")
+    XCTAssertEqual(try correlation(left: noise, right: dc), 0, "DC against signal is one side silent")
+  }
+}

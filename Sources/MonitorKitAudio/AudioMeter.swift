@@ -89,7 +89,12 @@ public final class AudioMeter: @unchecked Sendable {
     /// into the filter that a stream already running when metering starts
     /// never had; a stream that starts from silence starts at 0 either way.
     var primed = false
-    /// The correlation meter's exponentially weighted mean products: L·R, L², R².
+    /// The correlation meter's exponentially weighted sums: L, R, L·R, L², R²,
+    /// and the weights' own sum, which divides them into means (it is below 1
+    /// for the first few time constants after a start or reset).
+    var correlationWeight = 0.0
+    var correlationL = 0.0
+    var correlationR = 0.0
     var correlationLR = 0.0
     var correlationLL = 0.0
     var correlationRR = 0.0
@@ -624,15 +629,19 @@ public final class AudioMeter: @unchecked Sendable {
     }
   }
 
-  /// Folds the chunk's mean products into the correlation window: three vDSP
-  /// passes, one exp() per chunk.
+  /// Folds the chunk's sums into the correlation window: five vDSP passes,
+  /// one exp() per chunk.
   private func correlate(_ pair: (left: Int, right: Int), frames n: Int) {
     let l = UnsafePointer(stage.samples(pair.left))
     let r = UnsafePointer(stage.samples(pair.right))
     let length = vDSP_Length(n)
+    var sl: Float = 0
+    var sr: Float = 0
     var lr: Float = 0
     var ll: Float = 0
     var rr: Float = 0
+    vDSP_sve(l, 1, &sl, length)
+    vDSP_sve(r, 1, &sr, length)
     vDSP_dotpr(l, 1, r, 1, &lr, length)
     vDSP_svesq(l, 1, &ll, length)
     vDSP_svesq(r, 1, &rr, length)
@@ -640,21 +649,32 @@ public final class AudioMeter: @unchecked Sendable {
     let keep = exp(-Double(n) * correlationRate)
     let take = (1 - keep) / Double(n)
     let s = scalars
+    s.pointee.correlationWeight = s.pointee.correlationWeight * keep + (1 - keep)
+    s.pointee.correlationL = s.pointee.correlationL * keep + Double(sl) * take
+    s.pointee.correlationR = s.pointee.correlationR * keep + Double(sr) * take
     s.pointee.correlationLR = s.pointee.correlationLR * keep + Double(lr) * take
     s.pointee.correlationLL = s.pointee.correlationLL * keep + Double(ll) * take
     s.pointee.correlationRR = s.pointee.correlationRR * keep + Double(rr) * take
   }
 
-  /// Mean square of -70 dBFS: below it on both sides there is nothing to correlate.
+  /// Variance of -70 dBFS RMS: below it on both sides there is nothing to correlate.
   static let correlationFloor = pow(10, -70.0 / 10)
 
+  /// Pearson correlation over the window: the means come off, so a DC offset
+  /// (which is not audio) neither pulls the reading towards +1 nor counts as signal.
   private var correlationReading: Float {
     let s = scalars.pointee
+    guard s.correlationWeight > 0 else { return .nan }
+    let w = 1 / s.correlationWeight
+    let meanL = s.correlationL * w
+    let meanR = s.correlationR * w
     let floor = Self.correlationFloor
-    if s.correlationLL < floor && s.correlationRR < floor { return .nan }
+    let varianceL = max(0, s.correlationLL * w - meanL * meanL)
+    let varianceR = max(0, s.correlationRR * w - meanR * meanR)
+    if varianceL < floor && varianceR < floor { return .nan }
     // One side silent: uncorrelated.
-    if s.correlationLL < floor * 1e-3 || s.correlationRR < floor * 1e-3 { return 0 }
-    let c = s.correlationLR / (s.correlationLL * s.correlationRR).squareRoot()
+    if varianceL < floor * 1e-3 || varianceR < floor * 1e-3 { return 0 }
+    let c = (s.correlationLR * w - meanL * meanR) / (varianceL * varianceR).squareRoot()
     return Float(min(1, max(-1, c)))
   }
 

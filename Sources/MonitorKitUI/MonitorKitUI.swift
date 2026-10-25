@@ -13,7 +13,7 @@
 //   render pass for every surface and scope; `encodePictures` + `encodeScopes`
 //   take the accumulations out of the pictures' command buffer.
 // - SwiftUI: `MonitorView`, `ScopeView`, `ScopeStackView` (several scopes of a
-//   source in one renderer), `ClipReadout`, `AudioMeterView`,
+//   source in one renderer), `ClipReadout`, `LevelMeterView`, `AudioMeterView`,
 //   `MonitorStatusOverlay` (host metadata: timecode, tally, format, LUT name,
 //   labels; `MonitorOverlayModel` for video-rate values), legends (a list, or
 //   the captioned monitor-chrome legend), the scope IRE scale

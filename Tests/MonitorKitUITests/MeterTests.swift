@@ -178,14 +178,13 @@ final class MeterTests: XCTestCase {
       hosting.layoutSubtreeIfNeeded()
       XCTAssertGreaterThan(hosting.fittingSize.width, 0)
     }
+    for style in LevelMeterStyle.allCases {
+      let hosting = NSHostingView(rootView: LevelMeterView(meter: meter, style: style, name: "Camera 1").frame(width: 260, height: 120))
+      hosting.frame = NSRect(x: 0, y: 0, width: 260, height: 120)
+      hosting.layoutSubtreeIfNeeded()
+      XCTAssertGreaterThan(hosting.fittingSize.width, 0, "\(style)")
+    }
     let snapshot = meter.snapshot()
-    let scale = AudioMeterBarKind.truePeak.defaultScale(for: meter.configuration)
-    let zones = MeterZoneSpans(scale)
-    let a = MeterBars(snapshot: snapshot, kind: .truePeak, scale: scale, zones: zones, channels: 2, palette: .standard)
-    var moved = snapshot
-    moved.sequence &+= 1
-    XCTAssertTrue(a == MeterBars(snapshot: snapshot, kind: .truePeak, scale: scale, zones: zones, channels: 2, palette: .standard))
-    XCTAssertFalse(a == MeterBars(snapshot: moved, kind: .truePeak, scale: scale, zones: zones, channels: 2, palette: .standard))
     // A −18 dBFS sine reads its level on the peak meter.
     let r = MeterBarReading(levels: snapshot.channels[0], kind: .samplePeak, scale: AudioMeterBarKind.samplePeak.defaultScale(for: meter.configuration))
     XCTAssertEqual(r.value, 20 * log10(0.125), accuracy: 0.1)
@@ -202,9 +201,9 @@ extension MeterTests {
 
 extension MeterTests {
   /// One frame of 16 bars on every kind's scale: the bars' layout (the Canvas
-  /// body without the drawing) allocates nothing beyond its readings' own
-  /// `MeterScale` calls, as the zone edges are computed once per scale, and the
-  /// lit segments cover the travel up to each reading, zone by zone.
+  /// body without the drawing) allocates nothing beyond the channel layouts'
+  /// own `MeterScale` calls, as the zone spans are computed once per scale, and
+  /// the lit segments cover the travel up to each reading, zone by zone.
   func testBarLayoutAllocatesNothingBeyondItsReadings() throws {
     var s = AudioMeterSnapshot()
     s.channelCount = 16
@@ -217,54 +216,109 @@ extension MeterTests {
       c += 1
     }
     let size = CGSize(width: 200, height: 220)
+    let gap: CGFloat = 2
     for kind in AudioMeterBarKind.allCases {
-      let scale = kind.defaultScale(for: config)
-      let zones = MeterZoneSpans(scale)
-      XCTAssertEqual(zones.kinds, scale.zones.map(\.kind))
+      let scale = kind == .truePeak ? MeterScale.expandedPeak() : kind.defaultScale(for: config)
+      let spans = scale.zoneSpans
+      XCTAssertEqual(spans.map(\.kind), scale.zones.map(\.kind))
+      let layouts = (0..<16).map { ch -> MeterChannelLayout in
+        let r = MeterBarReading(levels: s.channels[ch], kind: kind, scale: scale)
+        return scale.layout(level: r.value, hold: r.holdValue)
+      }
+      let width = (size.width - gap * 15) / 16
       var lit = [CGFloat](repeating: 0, count: 16), rects = 0
       func run() {
-        lit = [CGFloat](repeating: 0, count: 16)
-        rects = 0
-        MeterBars.layout(snapshot: s, kind: kind, scale: scale, zones: zones, channels: 16, size: size) { rect, part in
+        LevelMeterView.layout(layouts, spans: spans, reference: 0.4, axis: .vertical, size: size, gap: gap) { rect, part in
           rects += 1
-          if case .zone = part { lit[Int((rect.minX / (rect.width + 2)).rounded())] += rect.height }
+          if case .lit = part { lit[Int((rect.minX / (width + gap)).rounded())] += rect.height }
         }
       }
       // Once first: the first use of a type instantiates its metadata.
       run()
       guard
         let layout = AllocationCounter.measure({
-          // In place: assigning a new array would copy on the first write.
           var i = 0
           while i < 16 {
             lit[i] = 0
             i += 1
           }
           rects = 0
-          MeterBars.layout(snapshot: s, kind: kind, scale: scale, zones: zones, channels: 16, size: size) { rect, part in
-            rects += 1
-            if case .zone = part { lit[Int((rect.minX / (rect.width + 2)).rounded())] += rect.height }
-          }
+          run()
         })
       else { throw XCTSkip("malloc_logger is unavailable") }
-      var sum = 0.0
-      let readings = AllocationCounter.measure {
-        var ch = 0
-        while ch < 16 {
-          let r = MeterBarReading(levels: s.channels[ch], kind: kind, scale: scale)
-          if let v = r.holdValue, (r.holdPosition ?? 0) > 0 { sum += scale.zone(of: v) == .over ? 1 : 0 }
-          sum += r.position
-          ch += 1
-        }
-      }!
-      XCTAssertLessThanOrEqual(layout, readings, "\(kind)")
+      XCTAssertEqual(layout, 0, "\(kind)")
       XCTAssertGreaterThan(rects, 16 * 2)
-      let travel = size.height - MeterMetrics.top - MeterMetrics.bottom
       for ch in 0..<16 {
-        let r = MeterBarReading(levels: s.channels[ch], kind: kind, scale: scale)
-        let expected = CGFloat(max(0, min(r.position, zones.to.last ?? 1) - (zones.from.first ?? 0))) * travel
+        let expected = CGFloat(max(0, min(layouts[ch].bar, spans.last?.upper ?? 1) - (spans.first?.lower ?? 0))) * size.height
         XCTAssertEqual(lit[ch], expected, accuracy: 1e-6, "\(kind) channel \(ch)")
       }
     }
+  }
+}
+
+extension MeterTests {
+  func testLevelMeterLabels() {
+    XCTAssertEqual(LevelMeterView.labels(nil, channelCount: 2), ["L", "R"])
+    XCTAssertEqual(LevelMeterView.labels(nil, channelCount: 8), ["1", "2", "3", "4", "5", "6", "7", "8"])
+    XCTAssertEqual(LevelMeterView.labels(["Mic"], channelCount: 2), ["Mic", "2"])
+  }
+
+  /// Horizontal rows: zones fixed on the travel, the hold line where it
+  /// belongs and the −20 reference line across every row.
+  func testLevelMeterRowLayout() {
+    let scale = MeterScale.expandedPeak()
+    let channels = [scale.layout(level: -6, hold: -3), scale.layout(level: -.infinity)]
+    let size = CGSize(width: 100, height: 12)
+    var parts: [(CGRect, LevelMeterPart)] = []
+    LevelMeterView.layout(
+      channels, spans: scale.zoneSpans, reference: scale.position(of: -20), axis: .horizontal, size: size, gap: 2
+    ) { parts.append(($0, $1)) }
+    let wells = parts.filter { $0.1 == .well }.map(\.0)
+    XCTAssertEqual(wells, [CGRect(x: 0, y: 0, width: 100, height: 5), CGRect(x: 0, y: 7, width: 100, height: 5)])
+    let lit = parts.filter { if case .lit = $0.1 { true } else { false } }
+    XCTAssertEqual(lit.map(\.1), [.lit(.normal), .lit(.caution)], "only the first row is lit")
+    XCTAssertEqual(lit[0].0.maxX, 73, accuracy: 1e-9, "green ends at −9 whatever the level")
+    XCTAssertEqual(lit[1].0.maxX, 82, accuracy: 1e-9, "the bar ends at −6")
+    let hold = parts.first { if case .hold = $0.1 { true } else { false } }
+    XCTAssertEqual(hold?.1, .hold(.caution))
+    XCTAssertEqual(hold?.0.midX ?? 0, 91, accuracy: 1e-9, "the hold line at −3")
+    let reference = parts.last
+    XCTAssertEqual(reference?.1, .reference)
+    XCTAssertEqual(reference?.0, CGRect(x: 39.5, y: 0, width: 1, height: 12))
+    // Vertical bars run bottom up.
+    var top = CGFloat.infinity
+    LevelMeterView.layout([scale.layout(level: 0)], spans: scale.zoneSpans, reference: nil, axis: .vertical,
+      size: CGSize(width: 10, height: 100)) { rect, part in if case .lit(.over) = part { top = rect.minY } }
+    XCTAssertEqual(top, 0, accuracy: 1e-9)
+  }
+
+  /// The animator ingests a new snapshot once, extrapolates between, and
+  /// restarts the hold line when the meter's maximum is reset.
+  @MainActor func testLevelMeterAnimator() {
+    let scale = MeterScale.expandedPeak()
+    let animator = LevelMeterAnimator()
+    var s = AudioMeterSnapshot()
+    s.channelCount = 2
+    s.sequence = 1
+    s.channels[0] = AudioChannelLevels(truePeak: -6, truePeakHold: -6, truePeakMax: -6)
+    animator.advance(s, channels: 2, scale: scale, at: 100, animate: true)
+    XCTAssertEqual(animator.layouts.count, 2)
+    XCTAssertEqual(animator.layouts[0].bar, scale.position(of: -6), accuracy: 1e-9)
+    XCTAssertFalse(animator.isOver)
+    // One second later with no new snapshot: fallen, the hold line still up.
+    animator.advance(s, channels: 2, scale: scale, at: 101, animate: true)
+    XCTAssertLessThan(animator.layouts[0].bar, scale.position(of: -15))
+    XCTAssertEqual(animator.layouts[0].hold ?? 0, scale.position(of: -6), accuracy: 1e-9)
+    // A peak reset clears the maximum: the line starts over from the bar.
+    s.sequence = 2
+    s.channels[0] = AudioChannelLevels(truePeak: -30, truePeakHold: -30, truePeakMax: -.infinity)
+    animator.advance(s, channels: 2, scale: scale, at: 101.1, animate: true)
+    XCTAssertLessThan(animator.layouts[0].hold ?? 0, scale.position(of: -15))
+    s.sequence = 3
+    s.channels[1] = AudioChannelLevels(truePeak: -0.5, truePeakHold: -0.5, truePeakMax: -0.5)
+    animator.advance(s, channels: 2, scale: scale, at: 101.2, animate: true)
+    XCTAssertTrue(animator.isOver)
+    animator.showNothing(channels: 2)
+    XCTAssertEqual(animator.layouts, [MeterChannelLayout(), MeterChannelLayout()])
   }
 }

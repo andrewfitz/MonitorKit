@@ -61,10 +61,28 @@ public final class MonitorLUT: @unchecked Sendable {
   /// bit-compatible with a conventional eight-read trilinear LUT shader (and with a
   /// host kernel calling `mk_applyLUT` with these `parameters`). `outputEncoding` declares what
   /// the LUT outputs; Rec.709, the default, is the only one modelled.
+  /// Throws when an active table's input domain spans less than
+  /// `Float.leastNormalMagnitude / Float.ulpOfOne` on any channel: Metal flushes
+  /// subnormal arithmetic, which would otherwise materially change its lookup.
   public init(
     device: MTLDevice, cube: CubeLUT, interpolation: LUTInterpolation = .tetrahedral,
     outputEncoding: LUTOutputEncoding = .rec709
   ) throws {
+    // Metal Float arithmetic flushes subnormal differences to zero. Require a
+    // span large enough that any lost difference is at most one normalized
+    // Float ulp. This is a GPU restriction: CubeLUT's CPU reference still
+    // supports smaller, finite-reciprocal domains.
+    let minimumSpan = Float.leastNormalMagnitude / Float.ulpOfOne
+    for (active, low, high) in [
+      (cube.hasCube, cube.domainMin, cube.domainMax),
+      (cube.shaperSize > 0, cube.shaperDomainMin, cube.shaperDomainMax),
+    ] where active {
+      let span = high - low
+      guard span.x >= minimumSpan, span.y >= minimumSpan, span.z >= minimumSpan else {
+        throw MonitorKitError.gpu(
+          "LUT input domain spans must be at least Float.leastNormalMagnitude / Float.ulpOfOne on every channel for Metal sampling.")
+      }
+    }
     let n = cube.hasCube ? cube.dimension : Self.shaperOnlyLattice
     // Shaper rows are the texture's width: a small lattice sits in the corner of
     // wider slices. Without a shaper the texture is exactly the lattice.

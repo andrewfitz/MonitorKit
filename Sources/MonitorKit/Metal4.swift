@@ -16,10 +16,21 @@ import Synchronization
 /// and to release replaced resources only after their last use completed.
 public struct MonitorSubmission {
   public var commandBuffer: any MTL4CommandBuffer
-  /// This submission's index, ≥ 1.
-  public var index: UInt64
+  /// This submission's index, ≥ 1. Lowering it also clamps `completedIndex`
+  /// below the new index, just as initialization does.
+  public var index: UInt64 {
+    didSet {
+      precondition(index >= 1, "MonitorSubmission indices start at 1 (0 means none)")
+      if completedIndex >= index { completedIndex = index - 1 }
+    }
+  }
   /// Submissions up to and including this index have completed (0: none known).
-  public var completedIndex: UInt64
+  /// Assignments are clamped below `index`: the submission being encoded cannot
+  /// already have completed. The host must still report actual completion of
+  /// earlier submissions; clamping cannot verify that GPU work has finished.
+  public var completedIndex: UInt64 {
+    didSet { completedIndex = min(completedIndex, index - 1) }
+  }
   /// Host transient uniforms, e.g. a bump allocator in its encode context. Nil
   /// uses the library's own rings (`MonitorEngine.framesInFlight` slots each).
   public var uniforms: (any MonitorUniformAllocator)?
@@ -133,8 +144,10 @@ public final class MonitorResidency: @unchecked Sendable {
     // this call (`MonitorFrame.keepResidentIfReleased`): an encode that misses the
     // flag has its submission covered by this tag.
     let tag = after ?? latest.load(ordering: .sequentiallyConsistent)
-    state.withLock { $0.retired.append(Retired(object: object, allocation: allocation, after: tag)) }
-    pending.add(1, ordering: .relaxed)
+    state.withLock { s in
+      s.retired.append(Retired(object: object, allocation: allocation, after: tag))
+      pending.add(1, ordering: .relaxed)
+    }
     release(through: completed.load(ordering: .acquiring))
   }
 

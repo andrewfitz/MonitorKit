@@ -127,7 +127,7 @@ public final class MonitorMetalView: MonitorPlatformView {
   ) {
     self.engine = engine
     self.scene = scene
-    self.configuration = configuration
+    self.configuration = configuration.normalized()
     runLoop = displayLinkRunLoop
     let layer = CAMetalLayer()
     metalLayer = layer
@@ -247,7 +247,9 @@ public final class MonitorMetalView: MonitorPlatformView {
       return !occlusionReported || window.occlusionState.contains(.visible)
     #elseif canImport(UIKit)
       guard let window, !isHidden else { return false }
-      return window.windowScene?.activationState != .background
+      if let scene = window.windowScene { return scene.activationState != .background }
+      // Legacy scene-less windows follow the application lifecycle instead.
+      return UIApplication.shared.applicationState != .background
     #endif
   }
 
@@ -305,6 +307,12 @@ public final class MonitorMetalView: MonitorPlatformView {
     #elseif canImport(UIKit)
       observe(UIApplication.didEnterBackgroundNotification, nil)
       observe(UIApplication.willEnterForegroundNotification, nil)
+      observe(UIApplication.didBecomeActiveNotification, nil)
+      // Scene activation can change independently in a multiwindow app. The
+      // will-enter-foreground notification can still see a background scene;
+      // refresh again once it is actually active so the link resumes.
+      observe(UIScene.didActivateNotification, window.windowScene)
+      observe(UIScene.didEnterBackgroundNotification, window.windowScene)
       observe(UIScreen.modeDidChangeNotification, nil)
     #endif
     updateDrawableSize()

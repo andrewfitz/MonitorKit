@@ -312,7 +312,10 @@ public struct ScopeGraticule: Equatable, Sendable {
   public init(settings: ScopeSettings, context: ScopeContext, viewportWidth: Double, viewportHeight: Double) {
     let s = settings.normalized()
     let d = s.display
-    let width = max(1, viewportWidth), height = max(1, viewportHeight)
+    // UI layout can transiently supply non-finite dimensions. Keep the
+    // public geometry (and the GPU uniforms derived from it) finite.
+    let width = viewportWidth.isFinite ? max(1, viewportWidth) : 1
+    let height = viewportHeight.isFinite ? max(1, viewportHeight) : 1
     switch s.kind {
     case .waveform:
       // The Y'CbCr parade's chroma panels have their own ticks.

@@ -194,6 +194,11 @@ float mk_eetf(float e1, float4 t) {
   // A knee that rounds to 1 (a target a hair under the source peak) leaves no span
   // to divide by: at and above it the curve is maxLum, as in Double.
   if (t.z >= 1) return t.y;
+  // MonitorKit extreme-compression convention: monotone cubic, slope 3·maxLum.
+  if (t.y < 1.0f / 3) {
+    float x = min(e1, 1.0f), u = 1 - x;
+    return t.y * x * (1 + u + u * u);
+  }
   float x = mk_div(min(e1, 1.0f) - t.z, 1 - t.z), x2 = x * x, x3 = x2 * x;
   return (2 * x3 - 3 * x2 + 1) * t.z + (x3 - 2 * x2 + x) * (1 - t.z) + (-2 * x3 + 3 * x2) * t.y;
 }

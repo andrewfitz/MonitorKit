@@ -95,8 +95,8 @@ public final class ScopeEngine: @unchecked Sendable {
   private let generalCompute: [Kernel: MTLComputePipelineState]
   private let computePipelines = Mutex<[ComputeKey: MTLComputePipelineState]>([:])
   private let renderPipelines = Mutex<[RenderKey: MTLRenderPipelineState]>([:])
-  /// Builds started and not finished; a failed one stays here, so it is never
-  /// retried. Internal for tests.
+  /// Builds started and not finished. Terminal failures are tracked separately
+  /// so warm-up waiters never mistake them for active work. Internal for tests.
   let pendingCompute = Mutex<Set<ComputeKey>>([])
   let pendingRender = Mutex<Set<RenderKey>>([])
   /// Builds that failed, asynchronous or on this thread; none is retried.
@@ -144,6 +144,9 @@ public final class ScopeEngine: @unchecked Sendable {
     device: MTLDevice, specialization: PipelineSpecialization = .asynchronous, framesInFlight: Int = 3,
     residency: MonitorResidency? = nil, cacheDirectory: URL?
   ) throws {
+    if let residency, residency.set.device.registryID != device.registryID {
+      throw MonitorKitError.gpu("The scope residency set belongs to a different Metal device.")
+    }
     self.device = device
     self.specialization = specialization
     self.framesInFlight = min(16, max(1, framesInFlight))
@@ -430,14 +433,12 @@ public final class ScopeEngine: @unchecked Sendable {
   /// `computePipeline(_:)` for warm-up: first waits for an asynchronous build
   /// of `key` that is already running, so it is not compiled twice. Never on a frame.
   func preparedComputePipeline(_ key: ComputeKey) throws -> MTLComputePipelineState {
-    awaitBuild { pendingCompute.withLock { $0.contains(key) } && !isFinished(key) }
     return try computePipeline(key)
   }
 
   /// `renderPipeline(_:)` for warm-up: first waits for an asynchronous build
   /// of `key` that is already running, so it is not compiled twice. Never on a frame.
   func preparedRenderPipeline(_ key: RenderKey) throws -> MTLRenderPipelineState {
-    awaitBuild { pendingRender.withLock { $0.contains(key) } && !isFinished(key) }
     return try renderPipeline(key)
   }
 
@@ -449,15 +450,14 @@ public final class ScopeEngine: @unchecked Sendable {
     renderPipelines.withLock { $0[key] != nil } || failedRender.withLock { $0.contains(key) }
   }
 
-  /// Waits while `running` (an asynchronous build of the key started and has
-  /// neither stored nor failed). Metal calls every completion handler; after a
-  /// minute without one the caller builds the pipeline itself instead.
+  /// Joins a cold build already owned by another caller or Metal completion.
+  /// The owner always publishes a result before broadcasting; a timeout must
+  /// not start a second compilation of the same key.
   private func awaitBuild(while running: () -> Bool) {
-    let deadline = Date(timeIntervalSinceNow: 60)
     buildFinished.lock()
     defer { buildFinished.unlock() }
     while running() {
-      if !buildFinished.wait(until: deadline) { return }
+      buildFinished.wait()
     }
   }
 
@@ -541,7 +541,31 @@ public final class ScopeEngine: @unchecked Sendable {
     if failedCompute.withLock({ $0.contains(key) }) {
       throw MonitorKitError.gpu("The scope kernel \(key.kernel.rawValue) \(key) failed to build.")
     }
+    // One owner per cold key, shared with asynchronous compilation. Cache
+    // hits return above, so steady-state draws never enter this wait path.
+    while !pendingCompute.withLock({ $0.insert(key).inserted }) {
+      awaitBuild { pendingCompute.withLock { $0.contains(key) } && !isFinished(key) }
+      if let cached = computePipelines.withLock({ $0[key] }) { return cached }
+      if failedCompute.withLock({ $0.contains(key) }) {
+        throw MonitorKitError.gpu("The scope compute pipeline failed to build.")
+      }
+    }
+    // A prior owner may have completed between our first lookup and claim.
+    if let cached = computePipelines.withLock({ $0[key] }) {
+      _ = pendingCompute.withLock { $0.remove(key) }
+      signalBuildFinished()
+      return cached
+    }
+    if failedCompute.withLock({ $0.contains(key) }) {
+      _ = pendingCompute.withLock { $0.remove(key) }
+      signalBuildFinished()
+      throw MonitorKitError.gpu("The scope compute pipeline failed to build.")
+    }
     builtOnCallerThread.withLock { $0.compute += 1 }
+    defer {
+      _ = pendingCompute.withLock { $0.remove(key) }
+      signalBuildFinished()
+    }
     do {
       if let pipelineArchive {
         return store(try pipelineArchive.makeComputePipelineState(descriptor: computeDescriptor(key)), for: key)
@@ -556,7 +580,14 @@ public final class ScopeEngine: @unchecked Sendable {
 
   /// Starts building `key` on Metal's compiler threads unless it is cached or already started.
   private func buildAsync(_ key: ComputeKey) {
-    guard pendingCompute.withLock({ $0.insert(key).inserted }) else { return }
+    guard !isFinished(key), pendingCompute.withLock({ $0.insert(key).inserted }) else { return }
+    // A completion may have published between the cache lookup and claiming
+    // the pending slot. Do not restart a cached or terminal build.
+    guard !isFinished(key) else {
+      _ = pendingCompute.withLock { $0.remove(key) }
+      signalBuildFinished()
+      return
+    }
     if let pipelineArchive {
       // The compiler's asynchronous build (Metal's compiler threads) awaited from a
       // task; no thread or queue of the library's own.
@@ -588,8 +619,8 @@ public final class ScopeEngine: @unchecked Sendable {
   /// A build of `key` failed. Internal for tests.
   func failed(_ key: ComputeKey, _ error: (any Error)?) {
     // A failed asynchronous task is terminal; do not retain it as in-flight.
-    _ = pendingCompute.withLock { $0.remove(key) }
     _ = failedCompute.withLock { $0.insert(key) }
+    _ = pendingCompute.withLock { $0.remove(key) }
     record("scope kernel \(key.kernel.rawValue) \(key): \(error.map { "\($0)" } ?? "unknown error")")
     signalBuildFinished()
   }
@@ -653,7 +684,31 @@ public final class ScopeEngine: @unchecked Sendable {
     if failedRender.withLock({ $0.contains(key) }) {
       throw MonitorKitError.gpu("Cannot draw scopes into \(key.target): the pipeline build failed.")
     }
+    // One owner per cold key, shared with asynchronous compilation. Cache
+    // hits return above, so steady-state draws never enter this wait path.
+    while !pendingRender.withLock({ $0.insert(key).inserted }) {
+      awaitBuild { pendingRender.withLock { $0.contains(key) } && !isFinished(key) }
+      if let cached = renderPipelines.withLock({ $0[key] }) { return cached }
+      if failedRender.withLock({ $0.contains(key) }) {
+        throw MonitorKitError.gpu("The scope render pipeline failed to build.")
+      }
+    }
+    // A prior owner may have completed between our first lookup and claim.
+    if let cached = renderPipelines.withLock({ $0[key] }) {
+      _ = pendingRender.withLock { $0.remove(key) }
+      signalBuildFinished()
+      return cached
+    }
+    if failedRender.withLock({ $0.contains(key) }) {
+      _ = pendingRender.withLock { $0.remove(key) }
+      signalBuildFinished()
+      throw MonitorKitError.gpu("The scope render pipeline failed to build.")
+    }
     builtOnCallerThread.withLock { $0.render += 1 }
+    defer {
+      _ = pendingRender.withLock { $0.remove(key) }
+      signalBuildFinished()
+    }
     do {
       if let pipelineArchive {
         return store(try pipelineArchive.makeRenderPipelineState(descriptor: metal4Descriptor(key)), for: key)
@@ -667,7 +722,12 @@ public final class ScopeEngine: @unchecked Sendable {
   }
 
   private func buildAsync(_ key: RenderKey) {
-    guard pendingRender.withLock({ $0.insert(key).inserted }) else { return }
+    guard !isFinished(key), pendingRender.withLock({ $0.insert(key).inserted }) else { return }
+    guard !isFinished(key) else {
+      _ = pendingRender.withLock { $0.remove(key) }
+      signalBuildFinished()
+      return
+    }
     if let pipelineArchive {
       Task.detached(priority: .utility) { [self] in
         do {
@@ -696,8 +756,8 @@ public final class ScopeEngine: @unchecked Sendable {
 
   /// A build of `key` failed. Internal for tests.
   func failed(_ key: RenderKey, _ error: (any Error)?) {
-    _ = pendingRender.withLock { $0.remove(key) }
     _ = failedRender.withLock { $0.insert(key) }
+    _ = pendingRender.withLock { $0.remove(key) }
     record("scope render pipeline \(key): \(error.map { "\($0)" } ?? "unknown error")")
     signalBuildFinished()
   }

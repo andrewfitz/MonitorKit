@@ -123,9 +123,17 @@ public struct MonitorStatusOverlay: View {
   /// The surface's rectangle in view points: its viewport in a drawable of the
   /// view's size at `scale`, as the renderer computes it, back in points.
   public static func frame(of region: MonitorRegion, in size: CGSize, scale: CGFloat) -> CGRect? {
+    guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
+      scale.isFinite
+    else { return nil }
     let s = max(1, scale)
-    let w = Int(max(1, (size.width * s).rounded())), h = Int(max(1, (size.height * s).rounded()))
-    guard size.width > 0, size.height > 0, let vp = region.viewport(width: w, height: h) else { return nil }
+    // Validate before converting: unconstrained layout sizes and overflowing
+    // size × scale products cannot describe a drawable and must not trap.
+    let pixelWidth = max(1, (size.width * s).rounded())
+    let pixelHeight = max(1, (size.height * s).rounded())
+    guard let w = Int(exactly: pixelWidth), let h = Int(exactly: pixelHeight),
+      let vp = region.viewport(width: w, height: h)
+    else { return nil }
     return CGRect(
       x: CGFloat(vp.x) / s, y: CGFloat(vp.y) / s, width: CGFloat(vp.width) / s, height: CGFloat(vp.height) / s)
   }

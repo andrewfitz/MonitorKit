@@ -323,6 +323,10 @@ extension AllocationTests {
 
     // Split into a pictures and a scopes buffer, with a scope rate holding some frames back.
     overlays[1].accumulationInterval = 0.002
+    // Changing cadence changes the fused groups: reconcile that one structural
+    // edit before measuring the zero-allocation steady-state ticks below.
+    try renderer.update()
+    XCTAssertFalse(renderer.scopeGroup(for: overlays[0]) === renderer.scopeGroup(for: overlays[1]))
     var splits: [Int] = []
     for i in 30..<54 {
       source.submit(pool[i % 4])

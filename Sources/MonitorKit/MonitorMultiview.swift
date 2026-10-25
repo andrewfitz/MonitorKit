@@ -59,7 +59,7 @@ public final class MonitorMultiview {
         throw MonitorKitError.gpu("MonitorMultiview.Canvas.draw outside its encode(…) call.")
       }
       let vp = viewport ?? MonitorViewport(width: width, height: height)
-      guard vp.x >= 0, vp.y >= 0, vp.x + vp.width <= width, vp.y + vp.height <= height else {
+      guard vp.isContained(inWidth: width, height: height) else {
         throw MonitorKitError.invalidFrame("viewport \(vp) is outside the \(width)×\(height) target")
       }
       if let c = classic {

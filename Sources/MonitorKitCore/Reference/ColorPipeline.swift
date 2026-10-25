@@ -139,8 +139,11 @@ public enum WhitePointTrim {
     return Chromaticity(x: 3 * u / d, y: 2 * v / d)
   }
 
-  /// The trimmed white.
+  /// The trimmed white. Temperature follows `daylight`'s 4000…25 000 K domain.
   public static func white(temperature: Double, tint: Double) -> Chromaticity {
+    // Evaluate both the white and its tangent at the same clamped temperature.
+    // Outside the locus domain, two clamped neighbours otherwise coincide.
+    let temperature = min(25_000, max(4000, temperature))
     let w = daylight(temperature)
     guard tint != 0 else { return w }
     // The locus's unit normal in uv, pointing above it (to green: v grows).
@@ -156,7 +159,7 @@ public enum WhitePointTrim {
   /// The linear-light gains in `primaries`; (1, 1, 1) without a trim.
   public static func gains(temperature: Double, tint: Double, primaries: ColorPrimaries) -> ColorRGB {
     guard temperature != d65Temperature || tint != 0 else { return ColorRGB(r: 1, g: 1, b: 1) }
-    let toRGB = primaries.toXYZ.inverse
+    let toRGB = primaries.fromXYZ
     func rgb(_ c: Chromaticity) -> ColorRGB {
       let v = c.xyz
       return toRGB.apply(ColorRGB(r: v.x, g: v.y, b: v.z))

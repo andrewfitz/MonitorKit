@@ -124,8 +124,8 @@ public struct FalseColorBand: Codable, Equatable, Sendable {
   }
   public func encode(to encoder: Encoder) throws {
     var c = encoder.container(keyedBy: CodingKeys.self)
-    if lower.isFinite { try c.encode(lower, forKey: .lower) }
-    if upper.isFinite { try c.encode(upper, forKey: .upper) }
+    if lower != -.infinity { try c.encode(lower, forKey: .lower) }
+    if upper != .infinity { try c.encode(upper, forKey: .upper) }
     try c.encode(color, forKey: .color)
   }
 }
@@ -784,12 +784,12 @@ public struct MonitorState: Codable, Equatable, Sendable {
     i = 0
     while bandsValid && i < bands.count {
       let band = bands[i]
-      bandsValid = !band.lower.isNaN && !band.upper.isNaN && band.color.isFinite
+      bandsValid = band.lower < band.upper && band.color.isFinite
       i += 1
     }
     if !bandsValid {
       v.falseColor.customBands = Array(
-        bands.filter { !$0.lower.isNaN && !$0.upper.isNaN && $0.color.isFinite }
+        bands.filter { $0.lower < $0.upper && $0.color.isFinite }
           .prefix(FalseColorSettings.maximumCustomBands))
     }
     v.focus.sensitivity = b(focus.sensitivity, 0...1, 0.5)

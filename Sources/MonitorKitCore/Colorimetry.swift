@@ -43,7 +43,7 @@ public struct ColorMatrix: Equatable, Sendable {
   }
 
   var simd: simd_double3x3 {
-    simd_double3x3(rows: [SIMD3(red.r, red.g, red.b), SIMD3(green.r, green.g, green.b), SIMD3(blue.r, blue.g, blue.b)])
+    simd_double3x3(columns: (SIMD3(red.r, green.r, blue.r), SIMD3(red.g, green.g, blue.g), SIMD3(red.b, green.b, blue.b)))
   }
 
   public func apply(_ c: ColorRGB) -> ColorRGB {
@@ -87,8 +87,7 @@ public enum ColorPrimaries: String, Codable, Sendable, CaseIterable {
 
   /// RGB to XYZ.
   public var toXYZ: ColorMatrix {
-    let c = chromaticities
-    return .normalizedPrimaryMatrix(red: c.red, green: c.green, blue: c.blue)
+    ColorMatrixCache.primaries[cacheIndex]
   }
 
   /// Linear-light luminance weights: BT.709's and BT.2100's published rounded rows
@@ -104,7 +103,7 @@ public enum ColorPrimaries: String, Codable, Sendable, CaseIterable {
   /// Linear RGB in `self` to linear RGB in `target`, through XYZ (same white, so
   /// every row sums to 1 and neutrals stay neutral).
   public func conversion(to target: ColorPrimaries) -> ColorMatrix {
-    target == self ? .identity : target.toXYZ.inverse.concatenating(toXYZ)
+    ColorMatrixCache.primaryConversions[cacheIndex * 3 + target.cacheIndex]
   }
 }
 
@@ -128,12 +127,62 @@ extension ColorGamut {
   }
 
   public var toXYZ: ColorMatrix {
-    let c = chromaticities
-    return .normalizedPrimaryMatrix(red: c.red, green: c.green, blue: c.blue)
+    ColorMatrixCache.gamuts[cacheIndex]
   }
 
   /// Scene-linear camera RGB to linear `primaries`.
   public func conversion(to primaries: ColorPrimaries) -> ColorMatrix {
-    primaries.toXYZ.inverse.concatenating(toXYZ)
+    ColorMatrixCache.gamutConversions[cacheIndex * 3 + primaries.cacheIndex]
+  }
+}
+
+// Closed enum domains let immutable, lazily initialized tables replace repeated
+// inversions in CPU reference pixel transforms. Derive from the same primaries
+// and operations as the uncached path, rather than rounding published matrices.
+private enum ColorMatrixCache {
+  static let primaries: [ColorMatrix] = ColorPrimaries.allCases.map {
+    let c = $0.chromaticities
+    return .normalizedPrimaryMatrix(red: c.red, green: c.green, blue: c.blue)
+  }
+  static let primaryInverses: [ColorMatrix] = primaries.map { $0.inverse }
+  static let primaryConversions: [ColorMatrix] = ColorPrimaries.allCases.flatMap { source in
+    ColorPrimaries.allCases.map { target in
+      source == target ? .identity : primaryInverses[target.cacheIndex].concatenating(primaries[source.cacheIndex])
+    }
+  }
+  static let gamuts: [ColorMatrix] = [
+    ColorGamut.rec709, .rec2020, .sGamut3, .sGamut3Cine, .arriWideGamut3, .arriWideGamut4,
+  ].map {
+    let c = $0.chromaticities
+    return .normalizedPrimaryMatrix(red: c.red, green: c.green, blue: c.blue)
+  }
+  static let gamutConversions: [ColorMatrix] = gamuts.flatMap { source in
+    primaryInverses.map { $0.concatenating(source) }
+  }
+}
+
+extension ColorPrimaries {
+  fileprivate var cacheIndex: Int {
+    switch self {
+    case .rec709: return 0
+    case .displayP3: return 1
+    case .rec2020: return 2
+    }
+  }
+
+  /// XYZ to linear RGB, cached along with the normalized primary matrix.
+  var fromXYZ: ColorMatrix { ColorMatrixCache.primaryInverses[cacheIndex] }
+}
+
+extension ColorGamut {
+  fileprivate var cacheIndex: Int {
+    switch self {
+    case .rec709: return 0
+    case .rec2020: return 1
+    case .sGamut3: return 2
+    case .sGamut3Cine: return 3
+    case .arriWideGamut3: return 4
+    case .arriWideGamut4: return 5
+    }
   }
 }

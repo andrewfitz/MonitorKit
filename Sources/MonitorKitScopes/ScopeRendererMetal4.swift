@@ -26,6 +26,15 @@ extension ScopeRenderer {
     _ accumulator: ScopeAccumulator, display: ScopeDisplay? = nil, target: MTLTexture,
     viewport: MonitorViewport? = nil, clear: Bool = false, into submission: MonitorSubmission
   ) throws {
+    // Any failure invalidates the prepared draw, including validation before
+    // `prepare` and encoder creation after it has cached its encoded work.
+    var succeeded = false
+    defer {
+      if !succeeded {
+        metal4Draw = nil
+        forgetEncodedState()
+      }
+    }
     let area = try Self.checkedViewport(viewport, target)
     try prepare(
       accumulator, display: display, viewport: area,
@@ -43,6 +52,7 @@ extension ScopeRenderer {
     }
     draw(with: encoder, waited: !clear)
     encoder.endEncoding()
+    succeeded = true
   }
 
   /// For drawing inside the host's own Metal 4 render pass: encode it after the
@@ -75,6 +85,9 @@ extension ScopeRenderer {
   {
     let table = try argumentTable()
     let r = engine.residency
+    // A same-device accumulator may belong to another engine. Its bins must
+    // survive this resolve too, even when it was last accumulated classically.
+    if accumulator.engine.residency !== r { accumulator.engine.residency.observe(submission) }
     accumulator.updateBinResidency()
     r.track(traceTexture, in: &residentTrace)
     r.track(graticuleTexture, in: &residentGraticule)

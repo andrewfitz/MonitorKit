@@ -156,11 +156,29 @@ public struct MonitorFrame: @unchecked Sendable {
   ) throws {
     guard layout.isValid else { throw MonitorKitError.invalidFrame("layout \(layout) is not valid") }
     guard width > 0, height > 0 else { throw MonitorKitError.invalidFrame("empty frame") }
+    guard width <= Int(UInt32.max), height <= Int(UInt32.max) else {
+      throw MonitorKitError.invalidFrame("frame dimensions exceed the shader's 32-bit representation")
+    }
+    switch layout {
+    case .v210, .uyvy8, .yuyv8:
+      guard luma == nil, chroma == nil else {
+        throw MonitorKitError.invalidFrame("packed layout has unexpected luma or chroma textures")
+      }
+    case .biplanar:
+      guard packed == nil else { throw MonitorKitError.invalidFrame("biplanar layout has an unexpected packed texture") }
+    case .rgb:
+      guard packed == nil, chroma == nil else {
+        throw MonitorKitError.invalidFrame("RGB layout has unexpected packed or chroma textures")
+      }
+    }
     // Formats are compared directly, not through a collection, so wrapping a frame allocates nothing.
     func need(_ t: MTLTexture?, _ name: String, _ w: Int, _ h: Int, _ a: MTLPixelFormat, _ b: MTLPixelFormat = .invalid)
       throws
     {
       guard let t else { throw MonitorKitError.invalidFrame("\(name) texture missing") }
+      guard t.textureType == .type2D, t.sampleCount == 1 else {
+        throw MonitorKitError.invalidFrame("\(name) texture must be a non-multisampled 2D texture")
+      }
       guard t.width >= w, t.height >= h else {
         throw MonitorKitError.invalidFrame("\(name) texture is \(t.width)×\(t.height), needs \(w)×\(h)")
       }

@@ -135,6 +135,27 @@ public final class MonitorPass {
     var layout: MonitorLayout
     var guides: GuideSettings
     var pixelsPerPoint: Double
+
+    static func == (a: Self, b: Self) -> Bool {
+      let x = a.guides, y = b.guides
+      guard a.layout == b.layout, a.pixelsPerPoint == b.pixelsPerPoint,
+        x.enabled == y.enabled, x.safeAreas == y.safeAreas,
+        x.followsFrameGuide == y.followsFrameGuide, x.thirds == y.thirds,
+        x.squareGrid == y.squareGrid, x.squareGridRows == y.squareGridRows,
+        x.diagonals == y.diagonals, x.centerCross == y.centerCross,
+        x.centerDot == y.centerDot, x.lineWidth == y.lineWidth,
+        x.hidesWhileMagnified == y.hidesWhileMagnified,
+        x.frameGuides.count == y.frameGuides.count else { return false }
+      // Matte opacity is a uniform, like the line colour and opacity. Compare
+      // the geometry without copying and mutating the shared frame-guide array.
+      var i = 0
+      while i < x.frameGuides.count {
+        let p = x.frameGuides[i], q = y.frameGuides[i]
+        if p.aspect != q.aspect || p.style != q.style { return false }
+        i += 1
+      }
+      return true
+    }
   }
 
   struct FalseColorKey: Equatable {
@@ -215,8 +236,9 @@ public final class MonitorPass {
     frame: MonitorFrame, feed: MonitorFeed, state: MonitorState, target: MTLTexture,
     viewport: MonitorViewport? = nil, clear: Bool = true, into commandBuffer: MTLCommandBuffer
   ) throws {
+    pending = nil
     let vp = viewport ?? MonitorViewport(width: target.width, height: target.height)
-    guard vp.x >= 0, vp.y >= 0, vp.x + vp.width <= target.width, vp.y + vp.height <= target.height
+    guard vp.isContained(inWidth: target.width, height: target.height)
     else { throw MonitorKitError.invalidFrame("viewport \(vp) is outside the \(target.width)×\(target.height) target") }
     let format = MonitorRenderTargetFormat(colorPixelFormat: target.pixelFormat, sampleCount: target.sampleCount)
     try prepare(frame: frame, feed: feed, state: state, viewport: vp, target: format, into: commandBuffer)
@@ -259,13 +281,15 @@ public final class MonitorPass {
     frame: MonitorFrame, feed: MonitorFeed, state: MonitorState, viewport: MonitorViewport,
     target: MonitorRenderTargetFormat, compute: Bool = false
   ) throws {
-    guard viewport.width > 0, viewport.height > 0 else {
-      throw MonitorKitError.invalidFrame("viewport is empty")
+    pending = nil
+    guard viewport.x >= 0, viewport.y >= 0, viewport.width > 0, viewport.height > 0 else {
+      throw MonitorKitError.invalidFrame("viewport has a negative origin or is empty")
     }
     let (s, sameState) = normalized(state)
     let output = outputColor.normalized()
     let maskValid =
-      s.focus.enabled && feed.hasFocusMask(for: frame, stage: s.focus.stage, monitorLUTEnabled: s.monitorLUT)
+      s.focus.enabled && !s.clean && !frame.isProcessed
+      && feed.hasFocusMask(for: frame, stage: s.focus.stage, monitorLUTEnabled: s.monitorLUT)
     // The declared ratio, a broken one as 0 (equality-stable): the key's geometry
     // reports it as unusable and lays the picture out with square pixels.
     let par = MonitorFrame.stablePixelAspectRatio(frame.declaredPixelAspectRatio)
@@ -481,6 +505,19 @@ public final class MonitorPass {
       guideMatte = (guideRaster.matteRect, guideRaster.matteOpacity)
       guideKey = nextGuideKey
       guideBuildCount += 1
+    }
+    // The first matte wins, exactly as in GuideRaster.rebuild. Its opacity can
+    // change without moving any stroke or rebuilding the guide cell index.
+    if showGuides, guideMatte.rect != nil {
+      var i = 0
+      while i < s.guides.frameGuides.count {
+        let frame = s.guides.frameGuides[i]
+        if frame.style != .lines {
+          guideMatte.opacity = frame.matteOpacity
+          break
+        }
+        i += 1
+      }
     }
 
     let monitorLUT = s.monitorLUT && k.monitorLUT != nil
@@ -1024,5 +1061,14 @@ extension MonitorLayout {
   /// layer to `fitRect`, or to `frame.geometry.displayAspectRatio(for: state)`).
   public init(frame: MonitorFrame, state: MonitorState, viewport: MonitorViewport) {
     self.init(frame: frame.geometry, state: state, viewportWidth: viewport.width, viewportHeight: viewport.height)
+  }
+}
+
+// Subtraction after bounding the origin avoids overflow for hand-built viewports.
+extension MonitorViewport {
+  func isContained(inWidth targetWidth: Int, height targetHeight: Int) -> Bool {
+    x >= 0 && y >= 0 && width > 0 && height > 0
+      && x <= targetWidth && y <= targetHeight
+      && width <= targetWidth - x && height <= targetHeight - y
   }
 }

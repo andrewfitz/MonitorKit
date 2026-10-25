@@ -103,7 +103,11 @@ public struct LoudnessReadout: Equatable, Sendable {
   /// `target` in LU ("+1.2 LU"). Silence (−∞) prints "—".
   public static func text(_ lufs: Double, unit: MeterScaleUnit = .lufs, target: Double = -23) -> String {
     guard lufs.isFinite else { return "—" }
-    if unit == .lu { return signed(lufs - target) + " LU" }
+    if unit == .lu {
+      let relative = lufs - target
+      guard relative.isFinite else { return "—" }
+      return signed(relative) + " LU"
+    }
     return signed(lufs) + " LUFS"
   }
 
@@ -114,14 +118,24 @@ public struct LoudnessReadout: Equatable, Sendable {
 /// Formats a reading only when its printed value changes, so a readout
 /// refreshing at 10 Hz builds a new string only when a digit moves.
 final class ReadoutText {
-  private var key = Int.min
+  private enum Key: Equatable {
+    case number(Double), nan
+  }
+  private var key: Key?
   private var text = "—"
   private let format: (Double) -> String
+  private let offset: Double
 
-  init(_ format: @escaping (Double) -> String) { self.format = format }
+  init(offset: Double = 0, _ format: @escaping (Double) -> String) {
+    self.offset = offset
+    self.format = format
+  }
 
   func callAsFunction(_ value: Double) -> String {
-    let k = value.isFinite ? Int((value * 10).rounded()) : (value.isNaN ? Int.min + 2 : Int.min + 1)
+    // Keep the cache key in floating point: converting a large finite reading
+    // to Int traps, and nonfinite inputs must remain distinct for formatters.
+    let scaled = (value - offset) * 10
+    let k: Key = value.isNaN ? .nan : .number(scaled.isFinite ? scaled.rounded() : value)
     if k != key {
       key = k
       text = format(value)
@@ -308,8 +322,36 @@ public struct AudioMeterView: View {
     }
   }
 
+  /// Spoken readings follow the selected bars; true-peak bars retain their maximum summary.
+  nonisolated static func channelSummary(
+    _ s: AudioMeterSnapshot, kind: AudioMeterBarKind, scale: MeterScale, channels: Int, present: Bool
+  ) -> String {
+    if kind == .truePeak { return MeterText.peakSummary(s, channels: channels, present: present) }
+    guard present else { return "no audio" }
+    let n = min(channels, s.channelCount)
+    guard n > 0 else { return "no reading" }
+    let unit: String
+    switch scale.unit {
+    case .dBFS: unit = "dBFS"
+    case .dBTP: unit = "dBTP"
+    case .vu: unit = "VU"
+    case .ppmMark: unit = "PPM mark"
+    case .dBRelativeToAlignment: unit = "dB relative to alignment"
+    case .dBRelativeToPML: unit = "dB relative to PML"
+    case .lu: unit = "LU"
+    case .lufs: unit = "LUFS"
+    }
+    var parts: [String] = []
+    for c in 0..<n {
+      let r = MeterBarReading(levels: s.channels[c], kind: kind, scale: scale)
+      parts.append("\(MeterText.spokenChannel(c, of: n)) \(kind.title) \(MeterText.level(r.value)) \(unit)")
+    }
+    if s.isOver() { parts.append("over") }
+    return parts.joined(separator: ", ")
+  }
+
   private func summary(_ s: AudioMeterSnapshot) -> String {
-    var parts = [MeterText.peakSummary(s, channels: channelLabels.count, present: present)]
+    var parts = [Self.channelSummary(s, kind: kind, scale: scale, channels: channelLabels.count, present: present)]
     if present, loudnessScale != nil {
       parts.append("integrated \(LoudnessReadout.text(Double(s.loudness.integrated), unit: loudnessUnit, target: target))")
       if let plr = s.peakToLoudnessRatio { parts.append("PLR \(MeterText.amount(plr))") }
@@ -369,8 +411,8 @@ struct KindColumns: View {
   var body: some View {
     let spans = scale.zoneSpans
     let reference = scale.alignment.map { scale.position(of: $0) }
-    let gap = LevelMeterView.rows(.full, channels: labels.count).gap
     let colors = LevelMeterColors(palette, scheme: scheme)
+    let gap = LevelMeterView.rows(.full, channels: labels.count).gap
     VStack(alignment: .leading, spacing: 4) {
       HStack(alignment: .top, spacing: 3) {
         LevelMeterRuler(ticks: scale.ticks, axis: .vertical, inset: 5).frame(width: 26)
@@ -431,7 +473,7 @@ struct LoudnessPanel: View {
               let s = meter.snapshot()
               let m = scale.layout(level: scale.value(forReading: Double(s.loudness.momentary)))
               let st = scale.layout(level: scale.value(forReading: Double(s.loudness.shortTerm)))
-              LevelMeterView.layout([m, st], spans: spans, reference: reference, axis: .vertical, size: size, gap: 3) {
+              LevelMeterView.layoutChannels(.pair(m, st), spans: spans, reference: reference, axis: .vertical, size: size, gap: 3) {
                 rect, part in context.fill(Path(rect), with: .color(colors(part)))
               }
             }
@@ -492,7 +534,9 @@ struct LoudnessPanel: View {
       self.target = target
       let loudness = { (v: Double) in LoudnessReadout.text(v, unit: unit, target: target) }
       cache = [
-        ReadoutText(loudness), ReadoutText(loudness), ReadoutText(loudness),
+        ReadoutText(offset: unit == .lu ? target : 0, loudness),
+        ReadoutText(offset: unit == .lu ? target : 0, loudness),
+        ReadoutText(offset: unit == .lu ? target : 0, loudness),
         ReadoutText { $0.isFinite ? MeterText.amount($0) + " LU" : "—" },
         // Like the level meters' maxima: "−∞" for silence, "—" for no reading.
         ReadoutText { $0.isNaN ? "—" : MeterText.level($0) + " dBTP" },

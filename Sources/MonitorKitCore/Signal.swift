@@ -347,9 +347,9 @@ extension CodeRange {
   /// Matches `normalizeLuma`/`normalizeChroma` exactly.
   public func levels(bitDepth: Int) -> (black: Double, span: Double, center: Double, chromaSpan: Double) {
     let validDepth = (8...16).contains(bitDepth)
-    let scale = validDepth ? Double(1 << (bitDepth - 8)) : pow(2, Double(bitDepth - 8))
+    let scale = validDepth ? Double(1 << (bitDepth - 8)) : pow(2, Double(bitDepth) - 8)
     let maximum = validDepth ? Double((1 << bitDepth) - 1) : pow(2, Double(bitDepth)) - 1
-    let center = validDepth ? Double(1 << (bitDepth - 1)) : pow(2, Double(bitDepth - 1))
+    let center = validDepth ? Double(1 << (bitDepth - 1)) : pow(2, Double(bitDepth) - 1)
     return self == .full
       ? (0, maximum, center, maximum) : (16 * scale, 219 * scale, center, 224 * scale)
   }

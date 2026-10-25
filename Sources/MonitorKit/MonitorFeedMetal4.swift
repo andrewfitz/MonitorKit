@@ -85,7 +85,7 @@ extension MonitorFeed {
   /// and blit work), so a re-freeze needs no host ordering.
   public func freeze(_ frame: MonitorFrame, into submission: MonitorSubmission) throws -> MonitorFrame {
     engine.residency.observe(submission)
-    if let frozenFrame, let owned = freezePlanes.0, frame.primaryTexture === owned { return frozenFrame }
+    if let frozen = unchangedFrozenFrame(frame) { return frozen }
     // A frozen frame the feed let go may be the source.
     frame.keepResidentIfReleased(in: engine.residency)
     let f = try prepareFreeze(frame)

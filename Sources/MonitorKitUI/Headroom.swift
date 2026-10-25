@@ -9,7 +9,7 @@
 
 /// The display's EDR headroom: peak over SDR white, 1 when the display shows no
 /// EDR. It changes at any time (brightness, ambient light, other HDR content), so
-/// a view reads it every frame and on screen changes; it reaches the picture as a
+/// a running view samples it ten times a second and on screen changes; it reaches the picture as a
 /// uniform (`MonitorOutputColor.headroom`) and rebuilds nothing.
 public enum MonitorDisplayHeadroom {
   #if canImport(AppKit)

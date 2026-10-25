@@ -23,8 +23,9 @@ extension ColorMath {
   /// L = a·max(V + b, 0)^2.4.
   public static func bt1886EOTF(_ v: Double, black: Double, white: Double) -> Double {
     let g = 1 / 2.4, w = pow(white, g), k = pow(black, g)
-    let a = pow(w - k, 2.4), b = k / (w - k)
-    return a * pow(max(v + b, 0), 2.4)
+    // Combine a and b before evaluating: this also covers white == black,
+    // where the display is constant and the factored form divides by zero.
+    return pow(max((w - k) * v + k, 0), 2.4)
   }
 
   /// A pure 2.2 power display (common computer monitors).
@@ -130,9 +131,17 @@ public struct ToneMapEETF: Equatable, Sendable {
   /// Whether the target holds the source: then the curve is the identity.
   public var isIdentity: Bool { maxLum >= 1 }
 
-  /// Steps 3 and 4 on a normalized PQ value E1: E2.
+  /// Steps 3 and 4 on a normalized PQ value E1: E2. Below maxLum 1/3,
+  /// MonitorKit limits the zero-knee tangent to 3·maxLum to keep it monotone.
   public func normalized(_ e1: Double) -> Double {
     if isIdentity || e1 < kneeStart { return e1 }
+    // With a zero knee and maxLum < 1/3, unit slope overshoots. Limit
+    // the starting tangent to 3·maxLum: the cubic is m·(1 − (1 − t)^3),
+    // with derivative 3m·(1 − t)^2 ≥ 0. See Docs/MATH.md §5.1.
+    if maxLum < 1.0 / 3 {
+      let t = min(e1, 1), u = 1 - t
+      return maxLum * t * (1 + u + u * u)
+    }
     let t = (min(e1, 1) - kneeStart) / (1 - kneeStart), t2 = t * t, t3 = t2 * t
     return (2 * t3 - 3 * t2 + 1) * kneeStart + (t3 - 2 * t2 + t) * (1 - kneeStart) + (-2 * t3 + 3 * t2) * maxLum
   }

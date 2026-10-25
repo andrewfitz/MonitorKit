@@ -169,6 +169,10 @@ public final class MonitorFeed {
       retire(focusMask)
       focusMask = nil
       maskKey = nil
+      // These dependencies belong to the old allocation. Its residency retirement
+      // keeps it alive; a fresh mask has no readers or writers to wait for.
+      maskLastRead = 0
+      maskLastWrite = 0
       mask = try engine.makeTexture(
         .r8Unorm, width: frame.width, height: frame.height, usage: [.shaderRead, .shaderWrite],
         label: "MonitorKit focus mask")
@@ -216,7 +220,9 @@ public final class MonitorFeed {
     let burn = stage != .source ? burnInLUT : nil
     let monitor = stage == .monitor && monitorLUTEnabled ? monitorLUT : nil
     guard key.burn === burn && key.monitor === monitor else { return false }
-    return !frame.signal.hasDistinctOutputReading || key.uniforms.frame == frame.parameters(for: stage)
+    // A host can relabel a held frame without changing its picture identity.
+    // Decode changes (range, matrix or siting) still invalidate its edge mask.
+    return key.uniforms.frame == frame.parameters(for: stage)
   }
 
   /// Marks the mask stale, e.g. when the host stops analysing.
@@ -238,6 +244,8 @@ public final class MonitorFeed {
     guard let mask = focusMask else { return }
     retire(mask)
     focusMask = nil
+    maskLastRead = 0
+    maskLastWrite = 0
     if resident.mask != nil { retireResident(&resident.mask) }
   }
 
@@ -272,7 +280,7 @@ public final class MonitorFeed {
   /// queue) every command buffer that still reads the previous frozen frame.
   /// Freezing the frozen frame itself returns it unchanged.
   public func freeze(_ frame: MonitorFrame, into commandBuffer: MTLCommandBuffer) throws -> MonitorFrame {
-    if let frozenFrame, let owned = freezePlanes.0, frame.primaryTexture === owned { return frozenFrame }
+    if let frozen = unchangedFrozenFrame(frame) { return frozen }
     let f = try prepareFreeze(frame)
     guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
       throw MonitorKitError.gpu("Cannot create a compute encoder for Freeze.")
@@ -285,6 +293,19 @@ public final class MonitorFeed {
       copy(source, into: b, pipeline, encoder)
     }
     return try finishFreeze(frame, f)
+  }
+
+  /// Only an unchanged copy of the current frozen value can skip the copy.
+  /// Sharing its first texture alone does not identify the other plane or metadata.
+  func unchangedFrozenFrame(_ frame: MonitorFrame) -> MonitorFrame? {
+    guard let frozenFrame, frame.id == frozenFrame.id,
+      frame.layout == frozenFrame.layout, frame.width == frozenFrame.width, frame.height == frozenFrame.height,
+      frame.packed === frozenFrame.packed, frame.luma === frozenFrame.luma, frame.chroma === frozenFrame.chroma,
+      frame.signal == frozenFrame.signal, frame.isProcessed == frozenFrame.isProcessed,
+      frame.declaredPixelAspectRatio.bitPattern == frozenFrame.declaredPixelAspectRatio.bitPattern,
+      frame.cleanAperture == frozenFrame.cleanAperture
+    else { return nil }
+    return frozenFrame
   }
 
   /// The owned planes of one freeze and what is copied into them, resolved before
@@ -311,8 +332,13 @@ public final class MonitorFeed {
     let pipeline1 = try second.map { try engine.copyPipeline(integer: $0.integer) }
     if second == nil { replaceFreezePlane(1, with: nil) }
     let before = (freezePlanes.0, freezePlanes.1)
-    let a = try plane(0, first, source: source0)
-    let b = try second.map { try plane(1, $0, source: source1) }
+    // A host may construct a different frame over one of our frozen planes.
+    // Allocate a new destination set rather than bind a source for simultaneous
+    // read and write, or overwrite a plane a held frozen frame still owns.
+    let aliases = before.0 === source0 || (source1 != nil && before.0 === source1)
+      || (before.1 != nil && (before.1 === source0 || (source1 != nil && before.1 === source1)))
+    let a = try plane(0, first, source: source0, reuse: !aliases)
+    let b = try second.map { try plane(1, $0, source: source1, reuse: !aliases) }
     let reused = (before.0 != nil && before.0 === a) || (b != nil && before.1 === b)
     return Freeze(planes: (a, b), sources: (source0, source1), pipelines: (pipeline0, pipeline1), reused: reused)
   }
@@ -389,9 +415,9 @@ public final class MonitorFeed {
     }
   }
 
-  private func plane(_ index: Int, _ shape: PlaneShape, source: MTLTexture?) throws -> MTLTexture {
+  private func plane(_ index: Int, _ shape: PlaneShape, source: MTLTexture?, reuse: Bool = true) throws -> MTLTexture {
     let existing = index == 0 ? freezePlanes.0 : freezePlanes.1
-    if let existing, existing.pixelFormat == shape.format, existing.width == shape.width,
+    if reuse, let existing, existing.pixelFormat == shape.format, existing.width == shape.width,
       existing.height == shape.height
     {
       return existing

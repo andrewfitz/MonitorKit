@@ -57,14 +57,16 @@ public enum BT2446MethodC {
   /// (eq. (14)). SDR display light in cd/m², in `primaries`. Black stays black.
   public static func toneMap(_ rgb: ColorRGB, primaries: ColorPrimaries, crosstalk a: Double = crosstalk) -> ColorRGB {
     let b = 1 - 2 * a
-    let x = ColorMatrix(red: ColorRGB(r: b, g: a, b: a), green: ColorRGB(r: a, g: b, b: a), blue: ColorRGB(r: a, g: a, b: b))
+    let crossed = ColorRGB(
+      r: b * rgb.r + a * rgb.g + a * rgb.b,
+      g: a * rgb.r + b * rgb.g + a * rgb.b,
+      b: a * rgb.r + a * rgb.g + b * rgb.b)
     let m = xyzMatrix(primaries)
-    let xyz = m.apply(x.apply(rgb))
-    let sum = xyz.r + xyz.g + xyz.b
-    guard xyz.g > 0, sum > 0 else { return ColorRGB(r: 0, g: 0, b: 0) }
-    let cx = xyz.r / sum, cy = xyz.g / sum
-    let y = luminance(xyz.g)
-    let sdr = ColorRGB(r: cx / cy * y, g: y, b: (1 - cx - cy) / cy * y)
-    return x.inverse.apply(m.inverse.apply(sdr))
+    let xyz = m.apply(crossed)
+    guard xyz.g > 0, xyz.r + xyz.g + xyz.b > 0 else { return ColorRGB(r: 0, g: 0, b: 0) }
+    // Fixed chromaticity makes reconstructed XYZ a scalar multiple of XYZ.
+    // Both inverse matrices commute with that scalar and cancel their forwards.
+    let k = luminance(xyz.g) / xyz.g
+    return ColorRGB(r: rgb.r * k, g: rgb.g * k, b: rgb.b * k)
   }
 }

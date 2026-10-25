@@ -672,12 +672,13 @@ public final class MonitorRenderer {
   /// Takes an overlay's edits. Display and region edits only redraw.
   private func updateOverlay(_ o: OverlayState) -> Bool {
     guard let next = o.overlay.read(after: o.revision) else { return false }
-    if next.lut != o.monitorLUTEnabled || o.revision == .max { needsRegroup = true }
+    let interval = UInt64(next.interval * 1e9)
+    if next.lut != o.monitorLUTEnabled || interval != o.interval || o.revision == .max { needsRegroup = true }
     o.settings = next.settings
     o.region = next.region
     o.monitorLUTEnabled = next.lut
     o.hidden = next.hidden
-    o.interval = UInt64(next.interval * 1e9)
+    o.interval = interval
     o.revision = next.revision
     if o.accumulator.settings != next.settings { o.accumulator.settings = next.settings }
     let key = next.settings.accumulationKey
@@ -702,14 +703,15 @@ public final class MonitorRenderer {
     // group's single dispatch to advance a slow member whenever a fast member
     // is due, so that member never observes its requested cadence.  Partition
     // by interval as well; each group can then be advanced atomically.
-    var pending: [(source: SourceState, lut: Bool, interval: UInt64, members: [OverlayState])] = []
+    var pending: [(source: SourceState, lut: Bool, interval: UInt64, measures: Bool, members: [OverlayState])] = []
     for o in overlays {
       if let k = pending.firstIndex(where: {
         $0.source === o.source && $0.lut == o.monitorLUTEnabled && $0.interval == o.interval
+          && $0.measures == o.measures
       }) {
         pending[k].members.append(o)
       } else {
-        pending.append((o.source, o.monitorLUTEnabled, o.interval, [o]))
+        pending.append((o.source, o.monitorLUTEnabled, o.interval, o.measures, [o]))
       }
     }
     for p in pending {
@@ -822,7 +824,7 @@ public final class MonitorRenderer {
     var primary = -1
     var i = 0
     while i < surfaces.count {
-      if surfaces[i].source.frame != nil {
+      if surfaces[i].source.frame != nil && surfaces[i].region.hasVisibleArea {
         primary = i
         break
       }
@@ -856,6 +858,7 @@ public final class MonitorRenderer {
     assignFeeds(width: width, height: height)
     analyze(path: path, use: use)
     layoutOverlays(width: width, height: height)
+    if needsRegroup { regroup() }
     if scopes { _ = accumulate(path: path, use: use) }
 
     // Everything the render pass draws, prepared before it starts: a scope's
@@ -989,6 +992,15 @@ public final class MonitorRenderer {
       i += 1
       s.viewport =
         s.source.frame == nil ? nil : s.region.viewport(width: width, height: height, pixelsPerPoint: pixelsPerPoint)
+      if s.viewport == nil, s.publishedLayout != nil || s.publishedViewport != nil {
+        let empty = MonitorStatus()
+        let statusDiffers = s.publishedStatus != empty
+        s.surface.publish(status: empty, layout: nil, viewport: nil)
+        s.publishedStatus = empty
+        s.publishedLayout = nil
+        s.publishedViewport = nil
+        if statusDiffers { statusChanged = true }
+      }
       s.spec = s.viewport != nil && s.drawState.focus.enabled && !s.drawState.clean ? spec(s) : nil
       s.feedIndex = s.spec == nil ? 0 : -1
     }
@@ -1135,7 +1147,15 @@ public final class MonitorRenderer {
       let hasFrame = o.source.frame != nil
       o.viewport = hasFrame ? o.region.viewport(width: width, height: height, pixelsPerPoint: pixelsPerPoint) : nil
       o.draws = o.viewport != nil && !o.hidden && !sceneClean
-      o.measures = hasFrame && (o.hidden || o.draws)
+      let measures = hasFrame && (o.hidden || o.draws)
+      // A fused dispatch advances every member. Keep scopes that stopped
+      // measuring apart from hidden statistics scopes that remain live.
+      if measures != o.measures { needsRegroup = true }
+      o.measures = measures
+      if !o.draws, o.publishedViewport != nil {
+        o.overlay.publish(graticule: nil, viewport: nil)
+        o.publishedViewport = nil
+      }
     }
   }
 

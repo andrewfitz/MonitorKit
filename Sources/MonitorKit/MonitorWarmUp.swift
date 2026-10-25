@@ -117,13 +117,26 @@ extension MonitorEngine {
   static func pipelineKeys(for surface: MonitorSurfaceConfiguration, placeholder: MonitorLUT) throws
     -> [PipelineKey]
   {
+    guard surface.layout.isValid else {
+      throw MonitorKitError.invalidFrame("invalid warm-up pixel layout")
+    }
+    // Frame dimensions become UInt32 shader parameters. Validate before
+    // deriving unknown sizes, whose scale-up must also remain representable.
+    for size in [surface.frameSize, surface.viewportSize].compactMap({ $0 }) {
+      guard size.width <= Int(UInt32.max), size.height <= Int(UInt32.max) else {
+        throw MonitorKitError.invalidFrame("warm-up dimensions exceed the shader's UInt32 range")
+      }
+    }
     let state = surface.state.normalized()
     let output = surface.outputColor.normalized().withoutHeadroom
     typealias Size = (width: Int, height: Int)
     // Unknown sizes: a minified (box) and a magnified (bicubic) picture, eight
     // times smaller and larger than the known size (4K when neither is known).
     func scaled(_ s: Size, _ f: Double) -> Size {
-      (max(1, Int((Double(max(1, s.width)) * f).rounded())), max(1, Int((Double(max(1, s.height)) * f).rounded())))
+      func dimension(_ value: Int) -> Int {
+        Int(min(Double(UInt32.max), max(1, (Double(max(1, value)) * f).rounded())))
+      }
+      return (dimension(s.width), dimension(s.height))
     }
     var pairs: [(frame: Size, viewport: Size)] = []
     switch (surface.frameSize, surface.viewportSize) {
@@ -156,6 +169,13 @@ extension MonitorEngine {
         layout: surface.layout.shaderKind, variant: variant.variant, color: variant.color)
       if surface.compute { pipelineKey = computeKey(pipelineKey) }
       if !keys.contains(pipelineKey) { keys.append(pipelineKey) }
+      if surface.frameSize == nil || surface.viewportSize == nil {
+        // The synthetic sizes do not guarantee opposite filter choices: zoom,
+        // anamorphic pixels or a small clean aperture can magnify both pairs.
+        // The eventual sizes can still require either function constant.
+        pipelineKey.variant.interpolates.toggle()
+        if !keys.contains(pipelineKey) { keys.append(pipelineKey) }
+      }
     }
     return keys
   }

@@ -64,6 +64,8 @@ public final class ScopeRenderer {
   /// nothing until then (call `ScopeEngine.prepare(target:)` to build it up front).
   public var isReady: Bool { pipeline != nil }
   private var graticuleKey: GraticuleKey?
+  /// Graticule geometry rebuilds, for cache regression tests.
+  private(set) var graticuleBuildCount: UInt64 = 0
   private var resolveKey: ResolveKey?
   var parameters = ScopeDrawParameters()
   var shapes = ScopeGraticuleParameters()
@@ -215,7 +217,9 @@ public final class ScopeRenderer {
 
   static func checkedViewport(_ viewport: MonitorViewport?, _ target: MTLTexture) throws -> MonitorViewport {
     let area = viewport ?? MonitorViewport(width: target.width, height: target.height)
-    guard area.x >= 0, area.y >= 0, area.x + area.width <= target.width, area.y + area.height <= target.height
+    guard area.x >= 0, area.y >= 0, area.width > 0, area.height > 0,
+      area.x <= target.width, area.y <= target.height,
+      area.width <= target.width - area.x, area.height <= target.height - area.y
     else { throw MonitorKitError.invalidFrame("viewport \(area) is outside the \(target.width)×\(target.height) target") }
     return area
   }
@@ -273,7 +277,19 @@ public final class ScopeRenderer {
     _ accumulator: ScopeAccumulator, display: ScopeDisplay?, viewport area: MonitorViewport,
     target: MonitorRenderTargetFormat
   ) throws -> Work {
-    guard area.width > 0, area.height > 0 else { throw MonitorKitError.invalidFrame("viewport is empty") }
+    guard accumulator.engine.device === engine.device else {
+      throw MonitorKitError.gpu("A scope renderer and accumulator must use the same Metal device.")
+    }
+    guard area.x >= 0, area.y >= 0, area.width > 0, area.height > 0 else {
+      throw MonitorKitError.invalidFrame("viewport must have a nonnegative origin and positive dimensions")
+    }
+    // Draw/resolve dimensions are UInt32s. Check their representability, the
+    // viewport's far edge and the rounded coverage area before converting or
+    // doing the texture-cache arithmetic below.
+    guard area.width <= Int(UInt32.max) - 63, area.height <= Int(UInt32.max) - 63,
+      area.x <= Int.max - area.width, area.y <= Int.max - area.height,
+      Self.roundedUp(area.width) <= Int.max / 2 / Self.roundedUp(area.height)
+    else { throw MonitorKitError.invalidFrame("viewport dimensions are too large") }
     retired.age()
     var s = accumulator.accumulatedSettings
     s.display = (display ?? accumulator.settings.display).normalized()
@@ -286,14 +302,37 @@ public final class ScopeRenderer {
     }
 
     let w = Double(area.width), h = Double(area.height)
-    var keySettings = s
-    keySettings.display = s.display.graticuleKey
+    // Keep only inputs read by ScopeGraticule: stage, clip statistics and
+    // settings for the other scope kinds do not change its geometry or labels.
+    var keySettings = ScopeSettings(kind: s.kind)
+    var keyContext = ScopeContext()
+    switch s.kind {
+    case .waveform:
+      keySettings.waveformMode = s.waveformMode
+      keySettings.waveformLevels = s.waveformLevels
+      keySettings.levelRange = s.levelRange
+      keySettings.display.waveformScale = s.display.waveformScale
+      if s.display.waveformScale == .codeValues { keyContext.range = accumulator.context.range }
+    case .histogram:
+      keySettings.histogramMode = s.histogramMode
+      keySettings.histogramBins = s.histogramBins
+      keySettings.levelRange = s.levelRange
+      keySettings.display.waveformScale = s.display.waveformScale
+      if s.display.waveformScale == .codeValues { keyContext.range = accumulator.context.range }
+    case .vectorscope:
+      keySettings.vectorscopeZoom = s.vectorscopeZoom
+      keySettings.display.vectorscopeTargets = s.display.vectorscopeTargets
+      keySettings.display.showsSkinToneLine = s.display.showsSkinToneLine
+      keySettings.display.skinToneAngle = s.display.skinToneAngle
+      keyContext.matrix = accumulator.context.matrix
+    }
     // Brightness, gain or opacity changes never redraw the graticule.
     let key = GraticuleKey(
-      settings: keySettings, context: accumulator.context, width: area.width, height: area.height,
+      settings: keySettings, context: keyContext, width: area.width, height: area.height,
       pixelsPerPoint: area.pixelsPerPoint)
     let redraw = key != graticuleKey || !graticuleFits(width: area.width, height: area.height)
     if redraw {
+      graticuleBuildCount &+= 1
       graticule = ScopeGraticule(settings: s, context: accumulator.context, viewportWidth: w, viewportHeight: h)
       writeShapes(width: w, height: h, pixelsPerPoint: area.pixelsPerPoint)
     }

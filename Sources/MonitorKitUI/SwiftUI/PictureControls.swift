@@ -222,7 +222,7 @@ public struct GuideControls: View {
       set: { a in
         var g = guides.wrappedValue
         if a == 0 {
-          if !g.frameGuides.isEmpty { g.frameGuides.removeFirst() }
+          g.frameGuides.removeAll()
         } else if g.frameGuides.isEmpty {
           g.frameGuides = [FrameGuide(aspect: a)]
         } else {
@@ -253,6 +253,9 @@ public struct GuideControls: View {
       get: { guides.wrappedValue.safeAreas.contains(percent) },
       set: { on in
         var g = guides.wrappedValue
+        // A fifth selection must not evict another active area when the
+        // normalizing binding keeps only four entries.
+        if on && !g.safeAreas.contains(percent) && g.safeAreas.count >= 4 { return }
         g.safeAreas.removeAll { $0 == percent }
         if on { g.safeAreas.append(percent) }
         g.safeAreas.sort()

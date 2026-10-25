@@ -142,8 +142,13 @@ public final class AudioMeter: @unchecked Sendable {
   private let runsRMS: Bool
   /// The correlation meter's pair, or nil when it is off.
   private let correlationPair: (left: Int, right: Int)?
-  /// 1 / (correlationTime × sample rate): the window's per-frame weight.
-  private let correlationRate: Double
+  /// Exponential weights in oldest-to-newest order; a short chunk uses the tail.
+  private let correlationWeights: UnsafeMutablePointer<Double>
+  /// Keep/take weights for each possible chunk length, precomputed at init.
+  private let correlationKeeps: UnsafeMutablePointer<Double>
+  private let correlationTakes: UnsafeMutablePointer<Double>
+  /// Double input and weighted-input scratch for the two selected channels.
+  private let correlationScratch: UnsafeMutablePointer<Double>
   private let tickFrames: Int
   private let publishFrames: Int
   private let rmsTicks: Int
@@ -158,7 +163,7 @@ public final class AudioMeter: @unchecked Sendable {
   /// A meter for `configuration`, with every buffer it will use allocated here.
   /// Throws `AudioMeterError` when the configuration is out of range.
   public init(configuration: AudioMeterConfiguration) throws(AudioMeterError) {
-    try configuration.validate()
+    let validatedPPM = try configuration.validatedPPMCoefficients()
     self.configuration = configuration
     let fs = configuration.sampleRate
     let kinds = configuration.meters
@@ -170,7 +175,24 @@ public final class AudioMeter: @unchecked Sendable {
     runsPPM = kinds.contains(.ppm)
     runsRMS = kinds.contains(.rms)
     correlationPair = kinds.contains(.correlation) ? configuration.correlationChannels : nil
-    correlationRate = 1 / (configuration.correlationTime * fs)
+    let correlationCapacity = correlationPair == nil ? 1 : Self.chunkFrames
+    correlationWeights = .allocate(capacity: correlationCapacity)
+    correlationKeeps = .allocate(capacity: correlationCapacity + 1)
+    correlationTakes = .allocate(capacity: correlationCapacity + 1)
+    correlationScratch = .allocate(capacity: 4 * correlationCapacity)
+    correlationScratch.initialize(repeating: 0, count: 4 * correlationCapacity)
+    let correlationRate = 1 / (configuration.correlationTime * fs)
+    let take = -expm1(-correlationRate)
+    for i in 0..<correlationCapacity {
+      let age = correlationCapacity - 1 - i
+      // Keep the newest weight valid even when a tiny time constant makes
+      // the rate infinite (0 * infinity would otherwise be NaN).
+      correlationWeights.advanced(by: i).initialize(to: age == 0 ? take : take * exp(-Double(age) * correlationRate))
+    }
+    for n in 0...correlationCapacity {
+      correlationKeeps.advanced(by: n).initialize(to: n == 0 ? 1 : exp(-Double(n) * correlationRate))
+      correlationTakes.advanced(by: n).initialize(to: n == 0 ? 0 : -expm1(-Double(n) * correlationRate))
+    }
     interpolator = TruePeakInterpolator(oversampling: TruePeakFilter.oversampling(sampleRate: fs))
     ppmInput = PPMInput.forSampleRate(fs)
     precondition(ppmInput.lanes <= 4, "the PPM takes at most four values per step")
@@ -242,7 +264,7 @@ public final class AudioMeter: @unchecked Sendable {
     // A sine's rectified mean is 2/pi of its peak; 0 VU is a sine peaking at the reference.
     vuGain = Double.pi / 2 / pow(10, configuration.vuReference.dBFS / 20)
 
-    ppm = PPMCoefficients(configuration.ppmBallistics, sampleRate: fs, input: ppmInput)
+    ppm = validatedPPM
     ppmGain = ppm.calibration / pow(10, configuration.ppmAlignment.dBFS / 20)
 
     decayPerFrame = -configuration.peakDecayRate * log(10) / (20 * fs)
@@ -292,6 +314,10 @@ public final class AudioMeter: @unchecked Sendable {
     rmsRing.deallocate()
     rmsWindows.deallocate()
     scalars.deallocate()
+    correlationWeights.deallocate()
+    correlationKeeps.deallocate()
+    correlationTakes.deallocate()
+    correlationScratch.deallocate()
   }
 
   // MARK: Input
@@ -560,12 +586,12 @@ public final class AudioMeter: @unchecked Sendable {
     if runsSamplePeak {
       Self.ballistics(
         bar: &s.pointee.sampleBar, hold: &s.pointee.sampleHold, age: &s.pointee.sampleHoldAge,
-        peak: Double(peak), decay: decay, frames: n, holdFrames: holdFrames)
+        peak: Double(peak), decay: decay, decayPerFrame: decayPerFrame, frames: n, holdFrames: holdFrames)
     }
     if runsTruePeak {
       Self.ballistics(
         bar: &s.pointee.trueBar, hold: &s.pointee.trueHold, age: &s.pointee.trueHoldAge,
-        peak: Double(truePeak), decay: decay, frames: n, holdFrames: holdFrames)
+        peak: Double(truePeak), decay: decay, decayPerFrame: decayPerFrame, frames: n, holdFrames: holdFrames)
       if Double(truePeak) > s.pointee.trueMax { s.pointee.trueMax = Double(truePeak) }
     }
     if peak >= clipLevel {
@@ -582,7 +608,7 @@ public final class AudioMeter: @unchecked Sendable {
   /// Instant attack; after `holdFrames` the hold marker falls with the bar.
   @inline(__always) private static func ballistics(
     bar: inout Double, hold: inout Double, age: inout Int,
-    peak: Double, decay: Double, frames: Int, holdFrames: Int
+    peak: Double, decay: Double, decayPerFrame: Double, frames: Int, holdFrames: Int
   ) {
     let decayed = bar * decay
     bar = peak > decayed ? peak : decayed
@@ -590,9 +616,13 @@ public final class AudioMeter: @unchecked Sendable {
       hold = peak
       age = 0
     } else {
-      age = age > holdFrames - frames ? holdFrames : age + frames
-      if age >= holdFrames {
-        let released = hold * decay
+      let remainingHold = holdFrames - age
+      let releasedFrames = max(0, frames - remainingHold)
+      age = frames >= remainingHold ? holdFrames : age + frames
+      if releasedFrames > 0 {
+        // Only audio after the hold expires contributes to its fall. Using
+        // the whole chunk releases early, including at the exact boundary.
+        let released = hold * (releasedFrames == frames ? decay : exp(decayPerFrame * Double(releasedFrames)))
         hold = bar > released ? bar : released
       }
     }
@@ -629,32 +659,37 @@ public final class AudioMeter: @unchecked Sendable {
     }
   }
 
-  /// Folds the chunk's sums into the correlation window: five vDSP passes,
-  /// one exp() per chunk.
+  /// Exact per-sample exponential weighting, evaluated as vector dot products.
+  /// Double products keep DC subtraction accurate even with large offsets.
   private func correlate(_ pair: (left: Int, right: Int), frames n: Int) {
-    let l = UnsafePointer(stage.samples(pair.left))
-    let r = UnsafePointer(stage.samples(pair.right))
+    let l = correlationScratch
+    let r = l + Self.chunkFrames
+    let wl = r + Self.chunkFrames
+    let wr = wl + Self.chunkFrames
+    let weights = correlationWeights + Self.chunkFrames - n
     let length = vDSP_Length(n)
-    var sl: Float = 0
-    var sr: Float = 0
-    var lr: Float = 0
-    var ll: Float = 0
-    var rr: Float = 0
-    vDSP_sve(l, 1, &sl, length)
-    vDSP_sve(r, 1, &sr, length)
-    vDSP_dotpr(l, 1, r, 1, &lr, length)
-    vDSP_svesq(l, 1, &ll, length)
-    vDSP_svesq(r, 1, &rr, length)
-    // The chunk's mean enters with the weight its length has in the window.
-    let keep = exp(-Double(n) * correlationRate)
-    let take = (1 - keep) / Double(n)
+    vDSP_vspdp(stage.samples(pair.left), 1, l, 1, length)
+    vDSP_vspdp(stage.samples(pair.right), 1, r, 1, length)
+    vDSP_vmulD(l, 1, weights, 1, wl, 1, length)
+    vDSP_vmulD(r, 1, weights, 1, wr, 1, length)
+    var sl = 0.0
+    var sr = 0.0
+    var lr = 0.0
+    var ll = 0.0
+    var rr = 0.0
+    vDSP_sveD(wl, 1, &sl, length)
+    vDSP_sveD(wr, 1, &sr, length)
+    vDSP_dotprD(wl, 1, r, 1, &lr, length)
+    vDSP_dotprD(wl, 1, l, 1, &ll, length)
+    vDSP_dotprD(wr, 1, r, 1, &rr, length)
+    let keep = correlationKeeps[n]
     let s = scalars
-    s.pointee.correlationWeight = s.pointee.correlationWeight * keep + (1 - keep)
-    s.pointee.correlationL = s.pointee.correlationL * keep + Double(sl) * take
-    s.pointee.correlationR = s.pointee.correlationR * keep + Double(sr) * take
-    s.pointee.correlationLR = s.pointee.correlationLR * keep + Double(lr) * take
-    s.pointee.correlationLL = s.pointee.correlationLL * keep + Double(ll) * take
-    s.pointee.correlationRR = s.pointee.correlationRR * keep + Double(rr) * take
+    s.pointee.correlationWeight = s.pointee.correlationWeight * keep + correlationTakes[n]
+    s.pointee.correlationL = s.pointee.correlationL * keep + sl
+    s.pointee.correlationR = s.pointee.correlationR * keep + sr
+    s.pointee.correlationLR = s.pointee.correlationLR * keep + lr
+    s.pointee.correlationLL = s.pointee.correlationLL * keep + ll
+    s.pointee.correlationRR = s.pointee.correlationRR * keep + rr
   }
 
   /// Variance of -70 dBFS RMS: below it on both sides there is nothing to correlate.

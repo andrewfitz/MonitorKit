@@ -6,6 +6,9 @@ import Synchronization
 
 /// ITU-R BS.1770-4 / EBU R 128 loudness meter: momentary (400 ms), short-term
 /// (3 s), gated integrated loudness and EBU Tech 3342 loudness range.
+/// Histogram gates and LRA use 0.02 LU bins from -70 through +150 LUFS,
+/// then 0.1 LU bins for extreme custom channel weights. Means retain exact
+/// block energies; gate boundaries and LRA percentiles use bin centres.
 ///
 /// Realtime-safe: everything is allocated at init. Call `process` from one
 /// thread at a time (the audio thread); `snapshot()` and the reset requests

@@ -146,7 +146,12 @@ public final class MonitorTextureCache: @unchecked Sendable {
     iosurface: IOSurfaceRef, plane: Int, format: MTLPixelFormat, width: Int, height: Int, owner: UInt64,
     now: Double?
   ) throws -> (texture: MTLTexture, token: FrozenPlanes) {
-    let t = now ?? Self.uptime()
+    guard width > 0, height > 0, format != .invalid,
+      plane >= 0, plane < max(1, IOSurfaceGetPlaneCount(iosurface))
+    else {
+      throw MonitorKitError.invalidFrame("invalid IOSurface texture dimensions, format or plane")
+    }
+    let t = now.flatMap { $0.isFinite ? $0 : nil } ?? Self.uptime()
     let key = Key(
       surface: IOSurfaceGetID(iosurface), plane: plane, format: format.rawValue, width: width, height: height)
     if let hit = lookup(key, iosurface, owner: owner, now: t) { return hit }
@@ -238,7 +243,7 @@ public final class MonitorTextureCache: @unchecked Sendable {
       throw MonitorKitError.invalidFrame(
         "the geometry is \(geometry.width)×\(geometry.height), the pixel buffer \(width)×\(height)")
     }
-    let t = now ?? Self.uptime()
+    let t = now.flatMap { $0.isFinite ? $0 : nil } ?? Self.uptime()
     var packed: MTLTexture?, luma: MTLTexture?, chroma: MTLTexture?
     // Each plane's entry token: a sweep or flush between the two lookups (or any
     // time later) marks it, and the frame's encodes then make its planes resident again.
@@ -283,7 +288,7 @@ public final class MonitorTextureCache: @unchecked Sendable {
   /// every `sweepInterval`; call it yourself while no frames arrive. A frame made
   /// over a released texture can still be drawn (see the type's notes).
   public func sweep(now: Double? = nil) {
-    let t = now ?? Self.uptime()
+    let t = now.flatMap { $0.isFinite ? $0 : nil } ?? Self.uptime()
     let life = idleLifetime
     let removed = locked { s in
       s.lastSweep = max(s.lastSweep, t)

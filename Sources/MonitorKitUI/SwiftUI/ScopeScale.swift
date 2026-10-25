@@ -84,7 +84,7 @@ public struct ScopeIREScale: Equatable, Sendable {
   public var rangeText: String {
     func f(_ level: Double) -> String {
       let ire = (level * 1000).rounded() / 10
-      let text = ire == ire.rounded() ? String(Int(abs(ire))) : String(format: "%.1f", abs(ire))
+      let text = String(format: ire == ire.rounded() ? "%.0f" : "%.1f", abs(ire))
       return ire < 0 ? "−" + text : text
     }
     return f(axis.lowerBound) + "…" + f(axis.upperBound)

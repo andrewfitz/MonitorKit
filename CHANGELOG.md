@@ -2,6 +2,32 @@
 
 All notable changes to MonitorKit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, a minor version may change the public API; every such change is listed under **Changed** or **Removed**.
 
+## [Unreleased]
+
+### Fixed
+
+- Extend loudness histogram range and safely normalize extreme finite channel weights while preserving quiet channels; bound extreme biquad magnitude arithmetic.
+- Enforce mutable submission invariants, share cold pipeline compilation, warm both unknown-size filter variants, invalidate metadata-dependent focus masks, and retain cross-engine Metal 4 scope resources through completion.
+- Reject unsupported GPU LUT domain spans, preserve filename fallback for blank LUT titles, validate false-color bands and preserve exact ARRI neutral code boundaries.
+- Keep extreme low-target EETF curves monotone, reject overflowing scope viewports, select layer colors from visible surfaces, and preserve outstanding caller-owned command-buffer lifetimes.
+- Preserve changed metadata and secondary planes when freezing a frame that aliases existing frozen storage.
+- Correct guide clearing, safe-area selection limits, fractional-target loudness readouts and selected-meter accessibility announcements.
+- Reject invalid frame planes, texture shapes and overflowing viewport dimensions before GPU encoding; failed picture and Metal 4 scope preparation no longer leaves a stale draw available.
+- Synchronize residency retirement bookkeeping, preserve stencil-only sample counts, retry partially recorded pipeline archives, and validate texture-cache and warm-up requests.
+- Prevent duplicate asynchronous scope compilation after completion or failure, reject cross-device scope residency, and preserve all lanes when counting SIMD ballots.
+- Apply changed scope accumulation intervals to fused groups, separate scopes that stop measuring from live hidden scopes, and clear stale published geometry when pictures or scopes disappear.
+- Correct audio peak-hold release when its timer expires partway through a buffer, reject unrepresentable meter calibration parameters, bound custom scale generation, and prevent histogram conversion traps and biquad magnitude overflow.
+- Make correlation independent of callback partitions with exact per-sample exponential weights and nine Double vDSP passes over the selected pair; reject VU coefficients whose rounded poles are unstable, and preserve silence through custom scale conversions.
+- Handle degenerate BT.1886 endpoints, white-point temperatures outside the daylight domain, overflowing color analysis, and invalid layout, guide, gesture and readout inputs without integer traps or invalid geometry.
+- Revalidate mutable display configuration, release paused offscreen GPU work after completion, resume UIKit display links after scene activation, and show unavailable reasons in list legends.
+
+### Changed
+
+- Cache immutable color transforms, bound guide generation, simplify the Method C reference algebra, and avoid redundant picture/scope geometry and scene reconciliation work.
+- Avoid temporary loudness display arrays and unused focus-mask dependencies. Loudness histograms use 96 KB more default fixed storage, with an initialization-only tail for extreme custom weights; audio processing remains allocation-free.
+- See [the follow-up audit](Docs/AUDIT-2026-10-25-ROUND2.md) for measured improvements, algorithm comparisons and retained limitations.
+- Reuse the PPM coefficients produced during configuration validation when initializing `AudioMeter`, avoiding duplicate calibration and buffer allocation while retaining validation of disabled meters.
+
 ## [0.1.3] - 2026-10-25
 
 ### Fixed
@@ -15,7 +41,7 @@ All notable changes to MonitorKit are documented here. The format follows [Keep 
 
 ### Changed
 
-- `AudioMeterSnapshot.correlation` is the Pearson correlation: the window's means come off, so a DC offset no longer pulls the reading towards +1 (unrelated noise with a common offset read +0.97), DC alone reads NaN and DC against signal reads 0. The window's moments are divided by its total weight, so the first time constants after a start or reset are unbiased. Five vDSP passes per chunk instead of three.
+- `AudioMeterSnapshot.correlation` is the Pearson correlation: the window's means come off, so a DC offset no longer pulls the reading towards +1 (unrelated noise with a common offset read +0.97), DC alone reads NaN and DC against signal reads 0. The window's moments are divided by its total weight, so the first time constants after a start or reset are unbiased.
 
 ## [0.1.2] - 2026-10-25
 
@@ -25,7 +51,7 @@ All notable changes to MonitorKit are documented here. The format follows [Keep 
 - `MeterScale.expandedPeak(unit:reference:cautionLevel:maximumPeak:)`: −60…0 dBTP with an expanded top and the SMPTE RP 155 −20 dBFS reference line; `zoneSpans`, `ticks` and `layout(level:hold:)` (`MeterZoneSpan`, `MeterTick`, `MeterChannelLayout`).
 - `MeterDisplayBallistics` and `MeterHoldLine`: a display's bar and hold line between snapshots.
 - `AudioChannelLevels.isOver(maximumTruePeak:)`, `AudioMeterSnapshot.isOver(maximumTruePeak:)` and `peakToLoudnessRatio`.
-- Phase correlation (`AudioMeterKinds.correlation`, on in `.all`): `AudioMeterSnapshot.correlation`, `AudioMeterConfiguration.correlationTime` and `correlationChannels`. Three vDSP passes per chunk inside `process`, no allocation.
+- Phase correlation (`AudioMeterKinds.correlation`, on in `.all`): `AudioMeterSnapshot.correlation`, `AudioMeterConfiguration.correlationTime` and `correlationChannels`, with no allocation inside `process`.
 - `MeterText`: readout text with one decimal and a typographic minus, "−∞" for silence and "—" for no reading.
 - `MeterPalette.lightTrack`, `unlitOpacity`, `reference`, `latch`, `track(for:)` and `color(_:scheme:)`.
 

@@ -346,18 +346,22 @@ public struct FalseColorLegendView: View {
         Spacer(minLength: 0)
         Text(legend.unit.symbol).font(.caption2).foregroundStyle(.secondary)
       }
-      ForEach(legend.displayOrder) { e in
-        HStack(spacing: 6) {
-          Swatch(color: e.color, width: 14, height: 10)
-          Text(e.name).font(.caption)
-          Spacer(minLength: 4)
-          Text(e.range).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+      if let reason = unavailableText {
+        Label(reason, systemImage: "exclamationmark.triangle").font(.caption2).foregroundStyle(.secondary)
+      } else {
+        ForEach(legend.displayOrder) { e in
+          HStack(spacing: 6) {
+            Swatch(color: e.color, width: 14, height: 10)
+            Text(e.name).font(.caption)
+            Spacer(minLength: 4)
+            Text(e.range).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+          }
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel("\(e.name), \(e.range) \(legend.unit.symbol)")
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(e.name), \(e.range) \(legend.unit.symbol)")
-      }
-      if let note = legend.gapNote {
-        Text(note).font(.caption2).foregroundStyle(.secondary)
+        if let note = legend.gapNote {
+          Text(note).font(.caption2).foregroundStyle(.secondary)
+        }
       }
     }
     .accessibilityElement(children: .contain)

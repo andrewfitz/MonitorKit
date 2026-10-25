@@ -38,6 +38,13 @@ public struct MonitorRegion: Equatable, Sendable {
     return MonitorViewport(x: x0, y: y0, width: x1 - x0, height: y1 - y0, pixelsPerPoint: pixelsPerPoint)
   }
 
+  /// Whether any finite part of the region intersects the normalized target.
+  /// Independent of target resolution; rounding may still make a tiny region empty.
+  var hasVisibleArea: Bool {
+    guard x.isFinite, y.isFinite, width.isFinite, height.isFinite else { return false }
+    return max(x, 0) < min(x + width, 1) && max(y, 0) < min(y + height, 1)
+  }
+
   /// Whether the normalized view point (`u`, `v`) lies inside.
   public func contains(u: Double, v: Double) -> Bool {
     u >= x && u < x + width && v >= y && v < y + height
@@ -283,8 +290,8 @@ public final class MonitorScopeOverlay: Sendable {
   /// new frame; e.g. 1/30 for 30 Hz scopes of a 60p source). A frame that
   /// arrives sooner is skipped, and the latest one is accumulated once the
   /// interval has passed even if no newer frame comes. Settings and LUT edits
-  /// accumulate at once. Overlays accumulated together (one source, one
-  /// monitor-LUT choice) follow the shortest interval among them. Clamped to 0…3600.
+  /// accumulate at once. Overlays with the same source, monitor-LUT choice and
+  /// interval accumulate together. Clamped to 0…3600.
   public var accumulationInterval: Double {
     get { shared.withLock { $0.accumulationInterval } }
     set {
@@ -398,12 +405,36 @@ public final class MonitorScene: Sendable {
 
   public var surfaces: [MonitorSurface] {
     get { shared.withLock { $0.surfaces } }
-    set { shared.withLock { $0.surfaces = newValue; $0.revision &+= 1 } }
+    set {
+      shared.withLock {
+        guard !Self.sameMembers($0.surfaces, newValue) else { return }
+        $0.surfaces = newValue
+        $0.revision &+= 1
+      }
+    }
   }
 
   public var scopes: [MonitorScopeOverlay] {
     get { shared.withLock { $0.scopes } }
-    set { shared.withLock { $0.scopes = newValue; $0.revision &+= 1 } }
+    set {
+      shared.withLock {
+        guard !Self.sameMembers($0.scopes, newValue) else { return }
+        $0.scopes = newValue
+        $0.revision &+= 1
+      }
+    }
+  }
+
+  /// Membership is ordered identity, so republishing the same handles is a no-op.
+  /// Compare without constructing identity arrays on a UI publication path.
+  private static func sameMembers<T: AnyObject>(_ a: [T], _ b: [T]) -> Bool {
+    guard a.count == b.count else { return false }
+    var i = 0
+    while i < a.count {
+      if a[i] !== b[i] { return false }
+      i += 1
+    }
+    return true
   }
 
   /// What the target's values mean. With `signalNative` (the default) the layer is

@@ -122,7 +122,7 @@ public struct CubeLUT: Sendable, Equatable {
         }
         // Preserve the filename fallback for an explicitly empty TITLE so the
         // UI never renders a blank LUT name.
-        if !parsed.isEmpty { title = parsed }
+        if !parsed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { title = parsed }
         continue
       }
       if ["LUT_3D_SIZE", "LUT_1D_SIZE", "DOMAIN_MIN", "DOMAIN_MAX", "LUT_3D_INPUT_RANGE", "LUT_1D_INPUT_RANGE"]

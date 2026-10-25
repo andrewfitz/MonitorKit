@@ -247,7 +247,13 @@ public struct GuideParameters: Sendable {
     cells = InlineArray(repeating: 0)
     // A stroke at s affects pixel centres within `reach` of it; one more pixel of
     // margin keeps float rounding on the safe side.
-    let margin = Double(reach.x) + 1
+    guard reach.x.isFinite else {
+      // A malformed host-supplied radius must not trap while converting to Int.
+      // Keep the conservative default: the shader searches every cell.
+      cells = InlineArray(repeating: .max)
+      return
+    }
+    let margin = max(0, Double(reach.x)) + 1
     // Each count clamped before adding: a hand-filled struct may hold anything.
     let nv = Int(min(counts.x, UInt32(Self.maximumLines)))
     let total = min(nv + Int(min(counts.y, UInt32(Self.maximumLines))), Self.maximumLines)
@@ -258,8 +264,8 @@ public struct GuideParameters: Sendable {
         i += 1
         continue
       }
-      let low = Int(max(-1, ((position - margin) / Double(Self.cellSize)).rounded(.down)))
-      let high = Int(min(1024, ((position + margin) / Double(Self.cellSize)).rounded(.down)))
+      let low = Int(min(1024, max(-1, ((position - margin) / Double(Self.cellSize)).rounded(.down))))
+      let high = Int(max(-1, min(1024, ((position + margin) / Double(Self.cellSize)).rounded(.down))))
       var k = max(0, low)
       while k <= min(high, 1023) {
         cells[axis * 32 + k / 32] |= 1 << UInt32(k % 32)

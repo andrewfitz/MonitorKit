@@ -105,10 +105,18 @@ public struct MonitorMetalViewConfiguration: Sendable {
     preferredFrameRateRange: CAFrameRateRange = .default, framebufferOnly: Bool = true, gesturesEnabled: Bool = true
   ) {
     self.maximumDrawableCount = min(3, max(2, maximumDrawableCount))
-    self.preferredFrameLatency = min(2, max(1, preferredFrameLatency))
+    self.preferredFrameLatency = preferredFrameLatency.isFinite ? min(2, max(1, preferredFrameLatency)) : 2
     self.preferredFrameRateRange = preferredFrameRateRange
     self.framebufferOnly = framebufferOnly
     self.gesturesEnabled = gesturesEnabled
+  }
+
+  /// Configuration is mutable, so validate again where it reaches Core Animation.
+  func normalized() -> Self {
+    Self(
+      maximumDrawableCount: maximumDrawableCount, preferredFrameLatency: preferredFrameLatency,
+      preferredFrameRateRange: preferredFrameRateRange, framebufferOnly: framebufferOnly,
+      gesturesEnabled: gesturesEnabled)
   }
 }
 
@@ -147,6 +155,9 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
   /// vouch for: completions are reported below it until the renderer's own
   /// window has passed it.
   private var unvouched: UInt64 = 0
+  /// Keep the first incomplete caller encode as the completion barrier, but
+  /// measure the renderer's fallback window from the most recent one.
+  private var lastUnvouched: UInt64 = 0
   private let lock = NSLock()
   private var appliedLayerColor: MonitorLayerColor?
   /// A host-driven view's own tag, instead of the scene's.
@@ -256,6 +267,9 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
       changes.error = renderer.lastError
     }
     lock.unlock()
+    // An explicit offscreen draw is allowed while paused. It creates new GPU
+    // work after the transition to idle, so arrange its completion release too.
+    if drawable == nil, isIdle { releaseIdle() }
     guard changes.status || changes.graticule || changes.error != nil, let notify else { return }
     let status = changes.status, graticule = changes.graticule
     let error = changes.error
@@ -310,7 +324,7 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
     var done = probeEncode
     if unvouched > 0 {
       let window = UInt64(max(3, renderer.engine.framesInFlight))
-      if renderer.encodeCount >= unvouched &+ window {
+      if renderer.encodeCount >= lastUnvouched &+ window {
         unvouched = 0
       } else {
         done = min(done, unvouched - 1)
@@ -369,7 +383,8 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
         return false
       }
       if let drawable { commandBuffer.present(drawable) }
-      unvouched = renderer.encodeCount
+      if unvouched == 0 { unvouched = renderer.encodeCount }
+      lastUnvouched = renderer.encodeCount
       return true
     }
     guard let queue, let cb = queue.makeCommandBuffer() else { return false }

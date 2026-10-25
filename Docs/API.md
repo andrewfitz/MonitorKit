@@ -223,7 +223,7 @@ func warmUp(_ engine: MonitorEngine) throws -> Int {
 
 ### 3.2 `MonitorFrame`
 
-One borrowed video frame: textures plus a layout and a signal. Allocation-free to build.
+One borrowed video frame: textures plus a layout and a signal. Allocation-free to build. Supply only the planes used by the layout, as single-sample 2D textures. Dimensions must be positive and fit the shader’s UInt32 representation; invalid planes, shapes or dimensions throw before encoding.
 
 | Member | Meaning |
 | --- | --- |
@@ -283,7 +283,7 @@ IOSurface-keyed plane textures, made once per surface, plane, format and size, a
 
 ### 3.4 `MonitorLUT`
 
-A LUT on the GPU: one `rgba32Float` 3D texture (with the 1D shaper in further slices), built once per load, immutable and shareable across feeds and threads.
+A LUT on the GPU: one `rgba32Float` 3D texture (with the 1D shaper in further slices), built once per load, immutable and shareable across feeds and threads. Every active 3D or 1D table must have an input-domain span of at least `Float.leastNormalMagnitude / Float.ulpOfOne` on every channel; initialization throws for narrower domains because Metal flushes subnormal arithmetic and could materially change lookup positions. `CubeLUT` parsing and its CPU reference still support narrower domains with finite reciprocals.
 
 | Member | Meaning |
 | --- | --- |
@@ -552,6 +552,12 @@ final class Scopes {
 ```
 
 ## 5. MonitorKitAudio
+
+Meter construction rejects calibration and ballistic values whose derived coefficients cannot be represented by the processing types. Peak-hold decay starts only after the configured hold interval, including when that boundary falls inside a processing buffer. Custom digital-peak scale ranges generate at most 1024 regular marks, plus reference marks.
+
+Loudness histogram gates and LRA use 11,000 bins of 0.02 LU from −70 to +150 LUFS. Custom channel weights above one extend the upper domain with 0.1 LU bins through at least `150 + 10·log10(maximumWeight)` LUFS. The integrated histogram retains each bin's energy sum, so gated means use the stored block energies; relative gate boundaries and LRA percentiles use bin centres. The two histograms together require 16 bytes per bin (about 172 KiB for unit weights, up to 654 KiB for the largest finite Double weight), plus fixed bookkeeping. All storage is allocated at initialization and stays fixed while processing.
+
+Finite custom weights are normalized in energy arithmetic by `sqrt(max(1, maximumWeight))`, with the scale restored as a logarithmic loudness offset. This avoids overflowing large weighted energies while preserving quiet ordinary-weight channels when a heavily weighted channel is silent. Small weights multiply their channel energy before division; large weights divide by the scale before multiplication. Unit-scale layouts omit the division. Momentary and short-term readings remain ungated.
 
 Pure Swift and Accelerate. Realtime-safe: everything is allocated at init; `process` makes no heap allocation, takes no lock and uses no Swift concurrency.
 

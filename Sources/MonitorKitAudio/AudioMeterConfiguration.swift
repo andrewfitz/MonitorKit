@@ -162,8 +162,8 @@ public struct AudioMeterKinds: OptionSet, Sendable, Hashable {
   /// BS.1770-4 / EBU R 128 programme loudness over the configured channels.
   public static let loudness = AudioMeterKinds(rawValue: 1 << 5)
   /// Phase correlation of the programme's stereo pair, -1 to +1 (see
-  /// `AudioMeterSnapshot.correlation`). Needs at least two channels; five
-  /// vDSP passes per chunk.
+  /// `AudioMeterSnapshot.correlation`). Needs at least two channels; nine
+  /// vDSP passes over only the selected pair per chunk.
   public static let correlation = AudioMeterKinds(rawValue: 1 << 6)
 
   public static let all: AudioMeterKinds = [.samplePeak, .truePeak, .rms, .vu, .ppm, .loudness, .correlation]
@@ -178,7 +178,9 @@ public enum LoudnessChannel: Sendable, Hashable {
   /// surrounds): weight 1.41 (+1.5 dB). Rear surrounds beyond 120 degrees
   /// weigh 1.0 (`.weighted(1)`).
   case leftSurround, rightSurround
-  /// Any other position, with an explicit weight.
+  /// Any other position, with an explicit nonnegative finite weight.
+  /// Energy accumulation normalizes large weights internally, so even
+  /// Double's largest finite weight produces finite LUFS readings.
   case weighted(Double)
   /// Not part of this programme (e.g. another language pair on SDI).
   case excluded
@@ -229,7 +231,7 @@ public enum LoudnessChannel: Sendable, Hashable {
   public static func programmePair(channelCount: Int, first: Int = 0) -> [LoudnessChannel] {
     var layout = [LoudnessChannel](repeating: .excluded, count: max(channelCount, 0))
     if channelCount == 1, first == 0 { return mono }
-    if first >= 0, first + 1 < channelCount {
+    if channelCount > 1, first >= 0, first < channelCount - 1 {
       layout[first] = .left
       layout[first + 1] = .right
     }
@@ -349,19 +351,40 @@ public struct AudioMeterConfiguration: Sendable, Equatable {
     return (0, 1)
   }
 
-  func validate() throws(AudioMeterError) {
+  /// Validates every parameter, including disabled meters, and transfers the
+  /// validated PPM buffers to the caller, which must eventually deallocate them.
+  func validatedPPMCoefficients() throws(AudioMeterError) -> PPMCoefficients {
     try validateFormat(sampleRate: sampleRate, channelCount: channelCount)
     if meters.contains(.loudness) {
       try validateLoudnessChannels(loudnessChannels, channelCount: channelCount)
     }
     guard peakHoldTime >= 0, !peakHoldTime.isNaN else { throw .invalidParameter("peakHoldTime") }
     guard peakDecayRate > 0, peakDecayRate.isFinite else { throw .invalidParameter("peakDecayRate") }
-    guard clipLevelDBFS.isFinite else { throw .invalidParameter("clipLevelDBFS") }
-    guard vuReference.dBFS.isFinite, ppmAlignment.dBFS.isFinite else {
+    let clipAmplitude = Float(pow(10, clipLevelDBFS / 20))
+    guard clipLevelDBFS.isFinite, clipAmplitude > 0, clipAmplitude.isFinite else {
+      throw .invalidParameter("clipLevelDBFS")
+    }
+    let vuCalibration = Double.pi / 2 / pow(10, vuReference.dBFS / 20)
+    let ppmReference = pow(10, ppmAlignment.dBFS / 20)
+    guard vuReference.dBFS.isFinite, ppmAlignment.dBFS.isFinite,
+      vuCalibration > 0, vuCalibration.isFinite, ppmReference > 0, ppmReference.isFinite,
+      (1 / ppmReference).isFinite
+    else {
       throw .invalidParameter("alignment level")
     }
     guard vuBallistics.riseTime > 0, vuBallistics.riseTime.isFinite,
-      vuBallistics.overshoot > 0, vuBallistics.overshoot < 0.5
+      vuBallistics.overshoot > 0, vuBallistics.overshoot < 0.5,
+      vuBallistics.dampingRatio < 1,
+      vuBallistics.naturalFrequency > 0, vuBallistics.naturalFrequency.isFinite
+    else { throw .invalidParameter("vuBallistics") }
+    let vu = vuFilter(vuBallistics, sampleRate: sampleRate)
+    let vuDrive = Float(vu.b1 - vu.a1 * vu.b0)
+    guard vu.b0.isFinite, vu.b1.isFinite, vu.b2.isFinite,
+      vu.a1.isFinite, vu.a2.isFinite, vuDrive > 0, vuDrive.isFinite,
+      // The rounded denominator must still have both poles inside the unit
+      // circle (the second-order Jury conditions). A very slow movement can
+      // round onto or beyond a pole at 1 despite finite, nonzero drive.
+      abs(vu.a2) < 1, 1 + vu.a1 + vu.a2 > 0, 1 - vu.a1 + vu.a2 > 0
     else { throw .invalidParameter("vuBallistics") }
     guard rmsWindow > 0, rmsWindow <= 60 else { throw .invalidParameter("rmsWindow") }
     guard publishInterval >= 0, publishInterval <= 1 else { throw .invalidParameter("publishInterval") }
@@ -371,6 +394,21 @@ public struct AudioMeterConfiguration: Sendable, Equatable {
       ppm.fastTimeConstant.isFinite, ppm.slowTimeConstant.isFinite,
       (0...1).contains(ppm.fastWeight), ppm.returnRate > 0, ppm.returnRate.isFinite
     else { throw .invalidParameter("ppm ballistics") }
+    let ppmInput = PPMInput.forSampleRate(sampleRate)
+    let stepRate = sampleRate / Double(ppmInput.fold)
+    let release = pow(10, -ppm.returnRate / (20 * stepRate))
+    let fastCharge = 1 - exp(-1 / (ppm.fastTimeConstant * Double(ppmInput.lanes) * stepRate))
+    let slowCharge = 1 - exp(-1 / (ppm.slowTimeConstant * Double(ppmInput.lanes) * stepRate))
+    guard fastCharge > 0, slowCharge > 0,
+      Float(pow(release, -Double(PPMCoefficients.segment))).isFinite
+    else { throw .invalidParameter("ppm ballistics") }
+    let coefficients = PPMCoefficients(ppm, sampleRate: sampleRate, input: ppmInput)
+    let ppmGain = coefficients.calibration / ppmReference
+    guard ppmGain > 0, ppmGain.isFinite else {
+      coefficients.deallocate()
+      throw .invalidParameter("alignment level")
+    }
+    return coefficients
   }
 }
 

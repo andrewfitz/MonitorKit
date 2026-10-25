@@ -133,6 +133,15 @@ public struct LevelMeterView: View {
     _ channels: [MeterChannelLayout], spans: [MeterZoneSpan], reference: Double?, axis: Axis, size: CGSize,
     gap: CGFloat = 2, holdWidth: CGFloat = 2, _ emit: (CGRect, LevelMeterPart) -> Void
   ) {
+    layoutChannels(.array(channels), spans: spans, reference: reference, axis: axis, size: size,
+      gap: gap, holdWidth: holdWidth, emit)
+  }
+
+  /// Shared renderer for array-backed peak channels and the fixed loudness pair.
+  nonisolated static func layoutChannels(
+    _ channels: LevelMeterChannels, spans: [MeterZoneSpan], reference: Double?, axis: Axis, size: CGSize,
+    gap: CGFloat = 2, holdWidth: CGFloat = 2, _ emit: (CGRect, LevelMeterPart) -> Void
+  ) {
     let n = channels.count
     guard n > 0, size.width > 0, size.height > 0 else { return }
     let across = axis == .horizontal ? size.height : size.width
@@ -189,6 +198,28 @@ public struct LevelMeterView: View {
   nonisolated static func rowsHeight(_ style: LevelMeterStyle, channels n: Int) -> CGFloat {
     let r = rows(style, channels: n)
     return r.thickness * CGFloat(n) + r.gap * CGFloat(max(0, n - 1))
+  }
+}
+
+/// Concrete storage avoids generic Collection witness boxing in debug frame paths.
+enum LevelMeterChannels {
+  case array([MeterChannelLayout])
+  case pair(MeterChannelLayout, MeterChannelLayout)
+
+  var count: Int {
+    switch self {
+    case .array(let values): return values.count
+    case .pair: return 2
+    }
+  }
+
+  subscript(_ index: Int) -> MeterChannelLayout {
+    switch self {
+    case .array(let values): return values[index]
+    case .pair(let momentary, let shortTerm):
+      precondition(index == 0 || index == 1)
+      return index == 0 ? momentary : shortTerm
+    }
   }
 }
 

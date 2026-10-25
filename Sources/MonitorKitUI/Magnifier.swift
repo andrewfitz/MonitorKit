@@ -19,7 +19,7 @@ public enum MonitorMagnifier {
   public static func zoom(
     _ m: Magnification, by factor: Double, about point: (x: Double, y: Double), layout: MonitorLayout
   ) -> Magnification {
-    guard factor.isFinite, factor > 0 else { return m }
+    guard factor.isFinite, factor > 0, point.x.isFinite, point.y.isFinite else { return m }
     var v = m
     let current = effectiveZoom(layout)
     let zoom = min(zoomRange.upperBound, max(zoomRange.lowerBound, current * factor))
@@ -60,6 +60,7 @@ public enum MonitorMagnifier {
   public static func togglePixelExact(
     _ m: Magnification, at point: (x: Double, y: Double), layout: MonitorLayout
   ) -> Magnification {
+    guard point.x.isFinite, point.y.isFinite else { return m }
     var v = m
     if m.pixelExact {
       v.pixelExact = false

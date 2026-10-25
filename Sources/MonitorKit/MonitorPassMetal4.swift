@@ -32,6 +32,7 @@ extension MonitorPass {
     frame: MonitorFrame, feed: MonitorFeed, state: MonitorState, target: MTLTexture,
     viewport: MonitorViewport? = nil, clear: Bool = true, into submission: MonitorSubmission
   ) throws {
+    pending = nil
     let vp = try Self.checkedViewport(viewport, target)
     let format = MonitorRenderTargetFormat(colorPixelFormat: target.pixelFormat, sampleCount: target.sampleCount)
     try prepare(frame: frame, feed: feed, state: state, viewport: vp, target: format, submission: submission)
@@ -134,9 +135,11 @@ extension MonitorPass {
     frame: MonitorFrame, feed: MonitorFeed, state: MonitorState, target: MTLTexture, viewport: MonitorViewport?,
     sharesTarget: Bool, submission: MonitorSubmission, host: (any MTL4ComputeCommandEncoder)?
   ) throws {
+    pending = nil
     let vp = try Self.checkedViewport(viewport, target)
-    guard !target.pixelFormat.isSRGB, target.usage.contains(.shaderWrite) else {
-      throw MonitorKitError.invalidFrame("a compute target must be shader-writable and not sRGB-encoded")
+    guard target.textureType == .type2D, target.sampleCount == 1,
+      !target.isFramebufferOnly, !target.pixelFormat.isSRGB, target.usage.contains(.shaderWrite) else {
+      throw MonitorKitError.invalidFrame("a compute target must be a single-sample, shader-writable 2D texture and not sRGB-encoded")
     }
     try prepareMetal4(
       frame: frame, feed: feed, state: state, viewport: vp,
@@ -175,7 +178,7 @@ extension MonitorPass {
 
   static func checkedViewport(_ viewport: MonitorViewport?, _ target: MTLTexture) throws -> MonitorViewport {
     let vp = viewport ?? MonitorViewport(width: target.width, height: target.height)
-    guard vp.x >= 0, vp.y >= 0, vp.x + vp.width <= target.width, vp.y + vp.height <= target.height else {
+    guard vp.isContained(inWidth: target.width, height: target.height) else {
       throw MonitorKitError.invalidFrame("viewport \(vp) is outside the \(target.width)×\(target.height) target")
     }
     return vp
@@ -185,6 +188,7 @@ extension MonitorPass {
     frame: MonitorFrame, feed: MonitorFeed, state: MonitorState, viewport: MonitorViewport,
     target: MonitorRenderTargetFormat, submission: MonitorSubmission, compute: Bool
   ) throws {
+    pending = nil
     engine.residency.observe(submission)
     if metal4Table == nil {
       metal4Table = try engine.makeArgumentTable(textures: 7, buffers: 5, label: "MonitorKit pass")

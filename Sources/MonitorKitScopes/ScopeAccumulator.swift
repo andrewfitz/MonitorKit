@@ -91,6 +91,8 @@ public final class ScopeAccumulator {
   /// The bins were reshaped by a `begin` whose `finish` has not run.
   private var binsReshaped = false
   private var tile = Tile()
+  /// Dispatch geometry rebuilds, for cache regression tests.
+  private(set) var tileBuildCount: UInt64 = 0
   /// What a concurrent encoder's barriers cover; rebuilt only with the bins.
   private var barrierResources: [any MTLResource]
   private var pipeline: MTLComputePipelineState?
@@ -123,6 +125,7 @@ public final class ScopeAccumulator {
     var layout: ScopeBinLayout
   }
   private struct Tile {
+    var kind: ScopeKind?
     var width = 0, height = 0, groups = MTLSize(width: 1, height: 1, depth: 1)
     var threadgroupBytes = 0, columns = 0, rows = 0, run = 0
     var key = SIMD4<Int>.zero
@@ -450,14 +453,17 @@ public final class ScopeAccumulator {
       layout = key.layout
       binKey = key
       binsReshaped = true
-      tile = Tile()
     }
     let tileKey = SIMD4(frame.width, frame.height, layout.columns * 4 + layout.channels, layout.rows)
-    if tile.key != tileKey { tile = makeTile(settings: s, frame: frame, key: tileKey) }
+    if tile.kind != s.kind || tile.key != tileKey {
+      tile = makeTile(settings: s, frame: frame, key: tileKey)
+      tileBuildCount &+= 1
+    }
   }
 
   private func makeTile(settings s: ScopeSettings, frame: MonitorFrame, key: SIMD4<Int>) -> Tile {
     var t = Tile()
+    t.kind = s.kind
     t.key = key
     let fw = frame.width, fh = frame.height
     let budget = engine.threadgroupMemoryBudget

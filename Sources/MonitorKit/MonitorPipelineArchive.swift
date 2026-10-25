@@ -488,7 +488,12 @@ public final class MonitorPipelineArchive: @unchecked Sendable {
     }
     state.withLock { s in
       s.statistics.saves += 1
-      if let recorderError { s.statistics.lastError = recorderError }
+      if let recorderError {
+        s.statistics.lastError = recorderError
+        // A partial archive is useful, but failed recipes still need another
+        // recording attempt even if no new pipeline is compiled afterwards.
+        s.dirty = true
+      }
       s.loaded.removeAll { $0.url == url }
       s.loaded.insert(Loaded(url: url, archive: archive), at: 0)
       s.statistics.filesLoaded += 1

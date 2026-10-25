@@ -147,7 +147,7 @@ public struct MeterScale: Sendable, Hashable {
 
   /// A meter reading in this scale's unit. `-infinity` (silence) stays `-infinity`.
   public func value(forReading reading: Double) -> Double {
-    readingOffset + readingScale * reading
+    reading == -.infinity ? -.infinity : readingOffset + readingScale * reading
   }
 
   /// Where `value` (in the scale's unit) sits on the travel: 0 at the
@@ -219,9 +219,13 @@ extension MeterScale {
     var marks: [MeterScaleMark] = []
     let top = (range.upperBound / 5).rounded(.down) * 5
     var v = top
-    while v >= range.lowerBound {
+    // Bound work for user-supplied ranges; enormous or infinite bounds
+    // must not hang while generating marks. Keep the uppermost 1024 ticks.
+    while v.isFinite, v >= range.lowerBound, marks.count < 1024 {
       marks.append(MeterScaleMark(value: v, label: Self.format(v)))
-      v -= v > top - 40 ? 5 : 10
+      let next = v - (v > top - 40 ? 5 : 10)
+      guard next < v else { break }
+      v = next
     }
     for tick in [alignment.dBFS, pml] where range.contains(tick) && !marks.contains(where: { $0.value == tick }) {
       marks.append(MeterScaleMark(value: tick, label: nil, isMajor: false))
@@ -342,6 +346,6 @@ extension MeterScale {
   }
 
   private static func format(_ v: Double) -> String {
-    v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v)
+    v == v.rounded() ? String(format: "%.0f", v) : String(format: "%.1f", v)
   }
 }

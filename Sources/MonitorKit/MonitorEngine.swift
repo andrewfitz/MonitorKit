@@ -48,7 +48,7 @@ public struct MonitorRenderTargetFormat: Hashable, Sendable {
     self.init(
       colorPixelFormat: first?.pixelFormat ?? .invalid, depthPixelFormat: depth?.pixelFormat ?? .invalid,
       stencilPixelFormat: stencil?.pixelFormat ?? .invalid,
-      sampleCount: first?.sampleCount ?? depth?.sampleCount ?? 1, additionalColorPixelFormats: extra)
+      sampleCount: first?.sampleCount ?? depth?.sampleCount ?? stencil?.sampleCount ?? 1, additionalColorPixelFormats: extra)
   }
 
   var hasDepthOrStencil: Bool { depthPixelFormat != .invalid || stencilPixelFormat != .invalid }
@@ -98,13 +98,20 @@ public final class MonitorEngine: @unchecked Sendable {
 
   private let vertexFunction: MTLFunction
   private let renderPipelines = Mutex<[PipelineKey: MTLRenderPipelineState]>([:])
-  private let pendingPipelines = Mutex<Set<PipelineKey>>([])
+  private enum BuildKey: Hashable {
+    case render(PipelineKey), compute(PipelineKey), focus(FocusKey), copy(Bool)
+  }
+  private let pendingPipelines = Mutex<Set<BuildKey>>([])
+  private let buildFinished = NSCondition()
   private let focusPipelines = Mutex<[FocusKey: MTLComputePipelineState]>([:])
   private let computePipelines = Mutex<[PipelineKey: MTLComputePipelineState]>([:])
   private let copyPipelines = Mutex<(uint: MTLComputePipelineState?, float: MTLComputePipelineState?)>((nil, nil))
   private let createdResources = Atomic<Int>(0)
   private let builtPipelines = Atomic<Int>(0)
   private let callerBuiltPipelines = Atomic<Int>(0)
+  private let callerComputeBuilds = Atomic<Int>(0)
+  /// Synchronous compute compiler invocations, including focus and Freeze.
+  var computeCompilationsOnCaller: Int { callerComputeBuilds.load(ordering: .relaxed) }
   /// Depth and stencil always pass and are never written, so the picture draws
   /// the same inside any host pass.
   let depthStencil: MTLDepthStencilState
@@ -153,8 +160,6 @@ public final class MonitorEngine: @unchecked Sendable {
     var layout: UInt32
     var variant: Variant
     var color = ColorKey()
-    /// Only in `pendingPipelines`: a compute build, kept apart from the render one.
-    var compute = false
   }
 
   struct FocusKey: Hashable {
@@ -486,6 +491,7 @@ public final class MonitorEngine: @unchecked Sendable {
 
   /// A compute pipeline for `name` (specialized with `values`), by the compiler or the device.
   func makeComputeState(_ name: String, _ values: MTLFunctionConstantValues?) throws -> MTLComputePipelineState {
+    callerComputeBuilds.add(1, ordering: .relaxed)
     if let compiler {
       return try makeComputeState(metal4ComputeDescriptor(name, values), compiler)
     }
@@ -534,6 +540,10 @@ public final class MonitorEngine: @unchecked Sendable {
   /// The picture pipeline for `key`, built on this thread if it is not cached.
   func renderPipeline(_ key: PipelineKey) throws -> MTLRenderPipelineState {
     if let cached = renderPipelines.withLock({ $0[key] }) { return cached }
+    let buildKey = BuildKey.render(key)
+    beginBuild(buildKey)
+    defer { finishBuild(buildKey) }
+    if let cached = renderPipelines.withLock({ $0[key] }) { return cached }
     let state: MTLRenderPipelineState
     do {
       let values = Self.constants(
@@ -568,9 +578,12 @@ public final class MonitorEngine: @unchecked Sendable {
     case .synchronous: return try renderPipeline(key)
     case .asynchronous:
       if let cached = renderPipelines.withLock({ $0[key] }) { return cached }
-      guard pendingPipelines.withLock({ $0.insert(key).inserted }) else { return nil }
-      let values = Self.constants(
-        layout: key.layout, variant: key.variant, srgbTarget: key.target.colorPixelFormat.isSRGB, color: key.color)
+      let buildKey = BuildKey.render(key)
+      guard pendingPipelines.withLock({ $0.insert(buildKey).inserted }) else { return nil }
+      if let cached = renderPipelines.withLock({ $0[key] }) {
+        finishBuild(buildKey)
+        return cached
+      }
       if compiler != nil {
         // The compiler's asynchronous build (Metal's compiler threads) awaited from
         // a task; no thread or queue of the library's own.
@@ -585,6 +598,8 @@ public final class MonitorEngine: @unchecked Sendable {
         }
         return nil
       }
+      let values = Self.constants(
+        layout: key.layout, variant: key.variant, srgbTarget: key.target.colorPixelFormat.isSRGB, color: key.color)
       library.makeFunction(name: "mk_picture", constantValues: values) { [self] function, _ in
         guard let function else { return finish(key) }
         device.makeRenderPipelineState(descriptor: descriptor(key, fragment: function)) { [self] state, _ in
@@ -597,13 +612,32 @@ public final class MonitorEngine: @unchecked Sendable {
   }
 
   /// Completes an asynchronous build, including a terminal failure.
-  private func finish(_ key: PipelineKey) {
+  private func finish(_ key: PipelineKey) { finishBuild(.render(key)) }
+
+  /// Cold synchronous callers join an existing compiler task. Cache hits never
+  /// reach this condition, and different keys compile independently.
+  private func beginBuild(_ key: BuildKey) {
+    buildFinished.lock()
+    defer { buildFinished.unlock() }
+    while !pendingPipelines.withLock({ $0.insert(key).inserted }) {
+      buildFinished.wait()
+    }
+  }
+
+  private func finishBuild(_ key: BuildKey) {
+    buildFinished.lock()
     pendingPipelines.withLock { _ = $0.remove(key) }
+    buildFinished.broadcast()
+    buildFinished.unlock()
   }
 
   /// The compute picture pipeline for `key` (its target's colour format only), built here if not cached.
   func computePipeline(_ key: PipelineKey) throws -> MTLComputePipelineState {
     let key = Self.computeKey(key)
+    if let cached = computePipelines.withLock({ $0[key] }) { return cached }
+    let buildKey = BuildKey.compute(key)
+    beginBuild(buildKey)
+    defer { finishBuild(buildKey) }
     if let cached = computePipelines.withLock({ $0[key] }) { return cached }
     let state: MTLComputePipelineState
     do {
@@ -641,9 +675,12 @@ public final class MonitorEngine: @unchecked Sendable {
     case .synchronous: return try computePipeline(key)
     case .asynchronous:
       if let cached = computePipelines.withLock({ $0[key] }) { return cached }
-      let pendingKey = { var k = key; k.compute = true; return k }()
+      let pendingKey = BuildKey.compute(key)
       guard pendingPipelines.withLock({ $0.insert(pendingKey).inserted }) else { return nil }
-      let values = Self.constants(layout: key.layout, variant: key.variant, srgbTarget: false, color: key.color)
+      if let cached = computePipelines.withLock({ $0[key] }) {
+        finishBuild(pendingKey)
+        return cached
+      }
       if compiler != nil {
         Task.detached(priority: .utility) { [self] in
           guard let compiler else { return }
@@ -651,26 +688,27 @@ public final class MonitorEngine: @unchecked Sendable {
             "mk_pictureKernel",
             Self.constants(layout: key.layout, variant: key.variant, srgbTarget: false, color: key.color))
           guard let state = try? await makeComputeState(d, compiler) else {
-            pendingPipelines.withLock { _ = $0.remove(pendingKey) }
+            finishBuild(pendingKey)
             return
           }
           _ = storeCompute(state, for: key)
-          pendingPipelines.withLock { _ = $0.remove(pendingKey) }
+          finishBuild(pendingKey)
         }
         return nil
       }
+      let values = Self.constants(layout: key.layout, variant: key.variant, srgbTarget: false, color: key.color)
       library.makeFunction(name: "mk_pictureKernel", constantValues: values) { [self] function, _ in
         guard let function else {
-          pendingPipelines.withLock { _ = $0.remove(pendingKey) }
+          finishBuild(pendingKey)
           return
         }
         device.makeComputePipelineState(function: function) { [self] state, _ in
           guard let state else {
-            pendingPipelines.withLock { _ = $0.remove(pendingKey) }
+            finishBuild(pendingKey)
             return
           }
           _ = storeCompute(state, for: key)
-          pendingPipelines.withLock { _ = $0.remove(pendingKey) }
+          finishBuild(pendingKey)
         }
       }
       return nil
@@ -679,6 +717,10 @@ public final class MonitorEngine: @unchecked Sendable {
 
   /// The focus-analysis pipeline for a layout kind and the LUTs its stage applies.
   func focusPipeline(_ key: FocusKey) throws -> MTLComputePipelineState {
+    if let cached = focusPipelines.withLock({ $0[key] }) { return cached }
+    let buildKey = BuildKey.focus(key)
+    beginBuild(buildKey)
+    defer { finishBuild(buildKey) }
     if let cached = focusPipelines.withLock({ $0[key] }) { return cached }
     var variant = Variant.uber
     variant.luts = key.luts
@@ -694,6 +736,10 @@ public final class MonitorEngine: @unchecked Sendable {
   /// started on Metal's compiler threads at init (unless specialization is
   /// `.synchronous` or `.off`), built by `prepare`, else here on first use.
   func copyPipeline(integer: Bool) throws -> MTLComputePipelineState {
+    if let cached = cachedCopyPipeline(integer: integer) { return cached }
+    let buildKey = BuildKey.copy(integer)
+    beginBuild(buildKey)
+    defer { finishBuild(buildKey) }
     if let cached = cachedCopyPipeline(integer: integer) { return cached }
     return storeCopy(try makeComputeState(Self.copyFunction(integer: integer), nil), integer: integer)
   }
@@ -721,17 +767,24 @@ public final class MonitorEngine: @unchecked Sendable {
   /// they are needed finds them ready. Trivial kernels without constants.
   private func buildCopyPipelinesAsynchronously() {
     for integer in [true, false] {
+      let buildKey = BuildKey.copy(integer)
+      guard pendingPipelines.withLock({ $0.insert(buildKey).inserted }) else { continue }
       if compiler != nil {
         Task.detached(priority: .utility) { [self] in
           guard let compiler else { return }
+          defer { finishBuild(buildKey) }
           let d = metal4ComputeDescriptor(Self.copyFunction(integer: integer), nil)
           if let state = try? await makeComputeState(d, compiler) { _ = storeCopy(state, integer: integer) }
         }
         continue
       }
-      guard let function = library.makeFunction(name: Self.copyFunction(integer: integer)) else { continue }
+      guard let function = library.makeFunction(name: Self.copyFunction(integer: integer)) else {
+        finishBuild(buildKey)
+        continue
+      }
       device.makeComputePipelineState(function: function) { [self] state, _ in
         if let state { _ = storeCopy(state, integer: integer) }
+        finishBuild(buildKey)
       }
     }
   }

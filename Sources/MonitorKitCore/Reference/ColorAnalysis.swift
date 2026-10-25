@@ -28,8 +28,9 @@ public enum CodeRange: String, Codable, Sendable {
   public func lumaCode(normalized: Double, bitDepth: Int) -> Double? {
     guard normalized.isFinite, (8...16).contains(bitDepth) else { return nil }
     let scale = Double(1 << (bitDepth - 8))
-    return self == .full
+    let value = self == .full
       ? normalized * (Double((1 << bitDepth) - 1)) : normalized * 219 * scale + 16 * scale
+    return value.isFinite ? value : nil
   }
   public func normalizeChroma(code: Double, bitDepth: Int) -> Double? {
     guard code.isFinite, (8...16).contains(bitDepth) else { return nil }
@@ -109,17 +110,20 @@ public enum ColorMath {
     let k = matrix.coefficients
     let r = y + 2 * (1 - k.r) * cr
     let b = y + 2 * (1 - k.b) * cb
-    return ColorRGB(r: r, g: (y - k.r * r - k.b * b) / k.g, b: b)
+    let rgb = ColorRGB(r: r, g: (y - k.r * r - k.b * b) / k.g, b: b)
+    return rgb.isFinite ? rgb : nil
   }
   public static func signalLuma(_ rgb: ColorRGB, matrix: YCbCrMatrix) -> Double? {
     guard rgb.isFinite else { return nil }
     let k = matrix.coefficients
-    return rgb.r * k.r + rgb.g * k.g + rgb.b * k.b
+    let value = rgb.r * k.r + rgb.g * k.g + rgb.b * k.b
+    return value.isFinite ? value : nil
   }
   public static func linearLuminance(_ rgb: ColorRGB, gamut: ColorGamut) -> Double? {
     guard rgb.isFinite else { return nil }
     let k = gamut.luminanceCoefficients
-    return rgb.r * k.r + rgb.g * k.g + rgb.b * k.b
+    let value = rgb.r * k.r + rgb.g * k.g + rgb.b * k.b
+    return value.isFinite ? value : nil
   }
   /// Sony Technical Summary appendix, scene reflectance to normalized native S-Log3.
   public static func sLog3Encode(_ linear: Double) -> Double? {
@@ -183,31 +187,47 @@ public enum ARRIFalseColorProfile: String, CaseIterable, Codable, Sendable {
   /// Exact published 10-bit precomputed table. Full-range values have independent
   /// rounding and must not be derived by rescaling already rounded legal bounds.
   public func zones(range: CodeRange) -> [ARRIFalseColorZone] {
-    let values: [(ARRIFalseColorCategory, Double, Double)]
     switch (self, range) {
-    case (.logC3EI800, .legal):
-      values = [
-        (.red, 878, 940), (.yellow, 857, 878), (.pink, 461, 480), (.green, 397, 415),
-        (.blue, 152, 172), (.purple, 64, 152),
-      ]
-    case (.logC3EI800, .full):
-      values = [
-        (.red, 951, 1023), (.yellow, 926, 951), (.pink, 464, 486), (.green, 389, 410),
-        (.blue, 103, 127), (.purple, 0, 103),
-      ]
-    case (.alexa35LogC4EI800, .legal):
-      values = [
-        (.red, 808, 940), (.yellow, 789, 808), (.pink, 351, 366), (.green, 300, 315),
-        (.blue, 149, 159), (.purple, 64, 149),
-      ]
-    case (.alexa35LogC4EI800, .full):
-      values = [
-        (.red, 868, 1023), (.yellow, 846, 868), (.pink, 335, 353), (.green, 276, 293),
-        (.blue, 99, 111), (.purple, 0, 99),
-      ]
+    case (.logC3EI800, .legal): return Self.logC3LegalZones
+    case (.logC3EI800, .full): return Self.logC3FullZones
+    case (.alexa35LogC4EI800, .legal): return Self.logC4LegalZones
+    case (.alexa35LogC4EI800, .full): return Self.logC4FullZones
     }
-    return values.map { ARRIFalseColorZone(category: $0.0, lower: $0.1, upper: $0.2) }
   }
+
+  private static let logC3LegalZones: [ARRIFalseColorZone] = [
+    .init(category: .red, lower: 878, upper: 940),
+    .init(category: .yellow, lower: 857, upper: 878),
+    .init(category: .pink, lower: 461, upper: 480),
+    .init(category: .green, lower: 397, upper: 415),
+    .init(category: .blue, lower: 152, upper: 172),
+    .init(category: .purple, lower: 64, upper: 152),
+  ]
+  private static let logC3FullZones: [ARRIFalseColorZone] = [
+    .init(category: .red, lower: 951, upper: 1023),
+    .init(category: .yellow, lower: 926, upper: 951),
+    .init(category: .pink, lower: 464, upper: 486),
+    .init(category: .green, lower: 389, upper: 410),
+    .init(category: .blue, lower: 103, upper: 127),
+    .init(category: .purple, lower: 0, upper: 103),
+  ]
+  private static let logC4LegalZones: [ARRIFalseColorZone] = [
+    .init(category: .red, lower: 808, upper: 940),
+    .init(category: .yellow, lower: 789, upper: 808),
+    .init(category: .pink, lower: 351, upper: 366),
+    .init(category: .green, lower: 300, upper: 315),
+    .init(category: .blue, lower: 149, upper: 159),
+    .init(category: .purple, lower: 64, upper: 149),
+  ]
+  private static let logC4FullZones: [ARRIFalseColorZone] = [
+    .init(category: .red, lower: 868, upper: 1023),
+    .init(category: .yellow, lower: 846, upper: 868),
+    .init(category: .pink, lower: 335, upper: 353),
+    .init(category: .green, lower: 276, upper: 293),
+    .init(category: .blue, lower: 99, upper: 111),
+    .init(category: .purple, lower: 0, upper: 99),
+  ]
+
   public func category(achromaticCode: Double, range: CodeRange) -> ARRIFalseColorCategory? {
     guard achromaticCode.isFinite else { return nil }
     return zones(range: range).first { achromaticCode >= $0.lower && achromaticCode < $0.upper }?
@@ -216,10 +236,18 @@ public enum ARRIFalseColorProfile: String, CaseIterable, Codable, Sendable {
   /// RGB channels are normalized LogC; the table's quantization/range is explicit.
   /// Sony input uses the separately labeled SonyARRIStyleFalseColor adaptation.
   public func color(rgb: ColorRGB, range: CodeRange) -> ColorRGB? {
-    guard let a = ColorMath.signalLuma(rgb, matrix: .bt709),
-      let code = range.lumaCode(normalized: a, bitDepth: 10)
+    guard let luma = ColorMath.signalLuma(rgb, matrix: .bt709),
+      range.lumaCode(normalized: luma, bitDepth: 10) != nil
     else { return nil }
-    return category(achromaticCode: code, range: range)?.color ?? ColorRGB(r: a, g: a, b: a)
+    // ARRI eqs. (1)/(2) classify normalized achromatic LogC. Preserve neutrals
+    // exactly: weighting and reconstructing codes can move an integral table
+    // edge just below itself (legal code 397, for example).
+    let a = rgb.r == rgb.g && rgb.g == rgb.b ? rgb.r : luma
+    let zone = zones(range: range).first {
+      a >= range.normalizeLuma(code: $0.lower, bitDepth: 10)!
+        && a < range.normalizeLuma(code: $0.upper, bitDepth: 10)!
+    }
+    return zone?.category.color ?? ColorRGB(r: a, g: a, b: a)
   }
 }
 /// Luminance-based ARRI-style reference adaptation for native Sony S-Log3.

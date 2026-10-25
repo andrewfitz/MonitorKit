@@ -25,7 +25,31 @@ public struct Biquad: Sendable, Hashable {
     let ni = -(b1 * s1 + b2 * s2)
     let dr = 1 + a1 * c1 + a2 * c2
     let di = -(a1 * s1 + a2 * s2)
-    return ((nr * nr + ni * ni) / (dr * dr + di * di)).squareRoot()
+    // Squaring the components can overflow or underflow even when the
+    // magnitude itself is representable. hypot scales its inputs first.
+    let numerator = hypot(nr, ni)
+    let denominator = hypot(dr, di)
+    if numerator.isFinite, denominator.isFinite { return numerator / denominator }
+    guard b0.isFinite, b1.isFinite, b2.isFinite, a1.isFinite, a2.isFinite,
+          c1.isFinite, s1.isFinite, c2.isFinite, s2.isFinite else { return numerator / denominator }
+    // Public coefficients can overflow the component sums themselves, even
+    // when their ratio is finite. Normalize each polynomial independently;
+    // its complex components now have magnitude at most three.
+    let bs = max(abs(b0), max(abs(b1), abs(b2)))
+    let denominatorScale = max(1, max(abs(a1), abs(a2)))
+    if bs == 0 { return 0 / denominator }
+    let bn0 = b0 / bs
+    let bn1 = b1 / bs
+    let bn2 = b2 / bs
+    let an1 = a1 / denominatorScale
+    let an2 = a2 / denominatorScale
+    let n = hypot(bn0 + bn1 * c1 + bn2 * c2, bn1 * s1 + bn2 * s2)
+    let d = hypot(1 / denominatorScale + an1 * c1 + an2 * c2, an1 * s1 + an2 * s2)
+    guard n > 0, d > 0 else { return n / d }
+    // Combining exponents avoids an overflowing bs/as or n/d intermediate.
+    return Double(
+      sign: .plus, exponent: bs.exponent - denominatorScale.exponent + n.exponent - d.exponent,
+      significand: (bs.significand / denominatorScale.significand) * (n.significand / d.significand))
   }
 
   /// The section in vDSP_biquad order.

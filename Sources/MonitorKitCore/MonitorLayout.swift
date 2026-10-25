@@ -24,7 +24,7 @@ public struct MonitorRect: Equatable, Sendable {
   }
   /// The largest centred rect of `aspect` (width / height) inside this one.
   public func fitting(aspect: Double) -> MonitorRect {
-    guard aspect > 0, !isEmpty else { return self }
+    guard aspect.isFinite, aspect > 0, !isEmpty else { return self }
     let w = min(width, height * aspect), h = w / aspect
     return MonitorRect(x: midX - w / 2, y: midY - h / 2, width: w, height: h)
   }
@@ -165,7 +165,7 @@ public struct MonitorLayout: Equatable, Sendable {
     pictureWidth: Int, pictureHeight: Int, pixelAspectRatio: Double = 1,
     viewportWidth: Int, viewportHeight: Int, geometry: ViewGeometry, cleanAperture: MonitorRect? = nil
   ) {
-    let g = geometry
+    let g = geometry.normalized()
     let crop = MonitorFrameGeometry(width: pictureWidth, height: pictureHeight, cleanAperture: cleanAperture).shownRect
     let pw = crop.width, ph = crop.height
     let vw = Double(max(1, viewportWidth)), vh = Double(max(1, viewportHeight))
@@ -321,9 +321,12 @@ public struct GuideRaster: Equatable, Sendable {
     strokeWidth = 1
     guard guides.isShown(on: layout) else { return }
     let fit = layout.imageRect
-    let stroke = max(1, (guides.lineWidth * max(0.5, pixelsPerPoint)).rounded())
+    let lineWidth = guides.lineWidth.isFinite ? min(8, max(0.5, guides.lineWidth)) : 1
+    let density = pixelsPerPoint.isFinite ? max(0.5, pixelsPerPoint) : 1
+    let requestedStroke = (lineWidth * density).rounded()
+    let stroke = requestedStroke.isFinite ? max(1, requestedStroke) : 1
     strokeWidth = stroke
-    let b = Builder(half: stroke / 2, odd: Int(stroke) % 2 == 1)
+    let b = Builder(half: stroke / 2, odd: stroke.truncatingRemainder(dividingBy: 2) == 1)
 
     var basis = fit
     var index = 0
@@ -352,14 +355,19 @@ public struct GuideRaster: Equatable, Sendable {
       }
     }
     if guides.squareGrid {
-      let rows = max(2, guides.squareGridRows), cell = basis.height / Double(rows)
+      let rows = min(16, max(2, guides.squareGridRows)), cell = basis.height / Double(rows)
       var i = 1
       while i < rows {
         b.horizontal(basis.y + cell * Double(i), basis, &segments)
         i += 1
       }
       var k = 0.0
-      while basis.midX + k * cell < basis.maxX - b.half {
+      // Without magnification no later clipping can remove a segment. Once the
+      // prefix is full, further columns (and later guides) would be discarded.
+      // Magnified grids must retain the old order through viewport clipping.
+      while basis.midX + k * cell < basis.maxX - b.half
+        && (layout.isMagnified || segments.count < Self.maximumSegments)
+      {
         b.vertical(basis.midX + k * cell, basis, &segments)
         if k > 0 { b.vertical(basis.midX - k * cell, basis, &segments) }
         k += 1

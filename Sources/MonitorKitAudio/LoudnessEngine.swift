@@ -16,36 +16,70 @@ func meterTick(sampleRate: Double) -> (frames: Int, perHundredMilliseconds: Int)
   return (block, 1)
 }
 
-/// Histogram of block loudness over -70 ... +30 LUFS in 0.02 LU bins, with
-/// the exact energy sum per bin when the gated mean is needed. Integrated
-/// loudness and LRA need every block since reset; a programme of any length
-/// fits in fixed memory, the means stay exact and only the gate boundary is
-/// quantized to 0.02 LU. Louder blocks land in the top bin, which every gate
-/// keeps, so even absurd input cannot gate everything out.
+/// Combines and clears one tick's channel energies. Unit-scale layouts skip
+/// division; normalized layouts preserve the multiply/divide order.
+@inline(__always) func weightedTickEnergy(
+  _ energies: UnsafeMutablePointer<Double>, weights: UnsafePointer<Double>,
+  scale: Double, channelCount: Int
+) -> Double {
+  var energy = 0.0
+  var c = 0
+  if scale == 1 {
+    while c < channelCount {
+      energy += energies[c] * weights[c]
+      energies[c] = 0
+      c += 1
+    }
+  } else {
+    while c < channelCount {
+      // Small weights multiply first: dividing them by a huge scale first
+      // could underflow even when their actual channel energy passes -70 LUFS.
+      // Large weights divide first, avoiding an overflowing product.
+      energy += weights[c] <= 1
+        ? (energies[c] * weights[c]) / scale
+        : energies[c] * (weights[c] / scale)
+      energies[c] = 0
+      c += 1
+    }
+  }
+  return energy
+}
+
+/// Fixed-memory loudness histogram: 0.02 LU bins through +150 LUFS.
+/// Exotic custom channel weights extend the upper domain in 0.1 LU bins,
+/// allocated only when configured. Per-bin energy sums keep gated means
+/// exact; only gate boundaries and LRA percentiles are quantized.
 struct LoudnessHistogram {
   static let floor = -70.0
   static let binWidth = 0.02
-  static let binCount = 5000
+  static let fineCeiling = 150.0
+  static let fineBinCount = 11000
+  static let upperBinWidth = 0.1
+  let binCount: Int
 
   struct Totals {
     var count = 0
     var energy = 0.0
-    var lowBin = LoudnessHistogram.binCount
+    var lowBin = Int.max
     var highBin = -1
   }
 
+  let energyLoudnessOffset: Double
   let counts: UnsafeMutablePointer<UInt32>
   /// Per-bin energy sums; only the integrated-loudness histogram keeps them
   /// (the LRA gate needs just the running total).
   let energies: UnsafeMutablePointer<Double>?
   let totals: UnsafeMutablePointer<Totals>
 
-  init(storesEnergy: Bool) {
-    counts = .allocate(capacity: Self.binCount)
-    counts.initialize(repeating: 0, count: Self.binCount)
+  init(storesEnergy: Bool, energyLoudnessOffset: Double = 0, maximumLoudness: Double = 150) {
+    self.energyLoudnessOffset = energyLoudnessOffset
+    let upperBins = Int(ceil(max(0, min(maximumLoudness, 3300) - Self.fineCeiling) / Self.upperBinWidth))
+    binCount = Self.fineBinCount + upperBins
+    counts = .allocate(capacity: binCount)
+    counts.initialize(repeating: 0, count: binCount)
     if storesEnergy {
-      let e = UnsafeMutablePointer<Double>.allocate(capacity: Self.binCount)
-      e.initialize(repeating: 0, count: Self.binCount)
+      let e = UnsafeMutablePointer<Double>.allocate(capacity: binCount)
+      e.initialize(repeating: 0, count: binCount)
       energies = e
     } else {
       energies = nil
@@ -71,7 +105,11 @@ struct LoudnessHistogram {
 
   /// `energy` is the block's channel-weighted mean square.
   func add(loudness: Double, energy: Double) {
-    let b = min(max(Int(((loudness - Self.floor) / Self.binWidth).rounded(.down)), 0), Self.binCount - 1)
+    guard loudness.isFinite, energy.isFinite, energy > 0 else { return }
+    let position = loudness < Self.fineCeiling
+      ? ((loudness - Self.floor) / Self.binWidth).rounded(.down)
+      : Double(Self.fineBinCount) + ((loudness - Self.fineCeiling) / Self.upperBinWidth).rounded(.down)
+    let b = Int(min(max(position, 0), Double(binCount - 1)))
     counts[b] &+= 1
     energies?[b] += energy
     totals.pointee.count += 1
@@ -81,16 +119,24 @@ struct LoudnessHistogram {
   }
 
   /// First bin whose centre lies above `threshold`; never past the top bin.
-  private static func firstBin(above threshold: Double) -> Int {
-    let b = Int(((threshold - floor) / binWidth - 0.5).rounded(.down)) + 1
-    return min(max(b, 0), binCount - 1)
+  private func firstBin(above threshold: Double) -> Int {
+    let position = threshold < Self.fineCeiling
+      ? ((threshold - Self.floor) / Self.binWidth - 0.5).rounded(.down) + 1
+      : Double(Self.fineBinCount) + ((threshold - Self.fineCeiling) / Self.upperBinWidth - 0.5).rounded(.down) + 1
+    return Int(min(max(position, 0), Double(binCount - 1)))
+  }
+
+  private func center(of bin: Int) -> Double {
+    bin < Self.fineBinCount
+      ? Self.floor + (Double(bin) + 0.5) * Self.binWidth
+      : Self.fineCeiling + (Double(bin - Self.fineBinCount) + 0.5) * Self.upperBinWidth
   }
 
   /// The relative gate: `offset` LU below the loudness of the mean energy of all blocks.
   private func relativeThreshold(_ offset: Double) -> Double? {
     let t = totals.pointee
-    guard t.count > 0, t.energy > 0 else { return nil }
-    return -0.691 + 10 * log10(t.energy / Double(t.count)) + offset
+    guard t.count > 0, t.energy > 0, t.energy.isFinite else { return nil }
+    return -0.691 + 10 * log10(t.energy / Double(t.count)) + energyLoudnessOffset + offset
   }
 
   /// BS.1770-4 eq. 7: mean energy of the blocks above the -10 LU relative gate
@@ -98,7 +144,7 @@ struct LoudnessHistogram {
   func gatedMeanEnergy() -> Double {
     guard let energies, let threshold = relativeThreshold(-10) else { return 0 }
     let t = totals.pointee
-    let first = max(t.lowBin, Self.firstBin(above: threshold))
+    let first = max(t.lowBin, firstBin(above: threshold))
     guard first <= t.highBin else { return 0 }
     var energy = 0.0
     var count = 0
@@ -114,7 +160,7 @@ struct LoudnessHistogram {
   func loudnessRange() -> Double {
     guard let threshold = relativeThreshold(-20) else { return 0 }
     let t = totals.pointee
-    let first = max(t.lowBin, Self.firstBin(above: threshold))
+    let first = max(t.lowBin, firstBin(above: threshold))
     guard first <= t.highBin else { return 0 }
     var n = 0
     forEachIndex(t.highBin - first + 1) { n += Int(counts[first + $0]) }
@@ -126,9 +172,8 @@ struct LoudnessHistogram {
     var b = first
     while b <= t.highBin {
       cumulative += Int(counts[b])
-      let center = Self.floor + (Double(b) + 0.5) * Self.binWidth
-      if low.isNaN, cumulative > lowRank { low = center }
-      if cumulative > highRank { return center - low }
+      if low.isNaN, cumulative > lowRank { low = center(of: b) }
+      if cumulative > highRank { return center(of: b) - low }
       b += 1
     }
     return 0
@@ -179,6 +224,10 @@ final class LoudnessEngine {
   private let activeCount: Int
   private let inputs: UnsafeMutablePointer<UnsafePointer<Float>>
   private let weights: UnsafeMutablePointer<Double>
+  /// Factor common to every weighted energy. Keep energy arithmetic bounded
+  /// even for finite custom weights near Double.max; restore it in log space.
+  private let weightScale: Double
+  private let energyLoudnessOffset: Double
   /// The shelf and high-pass as one two-section cascade.
   private let kWeighting: vDSP_biquad_SetupD
   /// The cascade's gain at DC after the shelf and after both stages: H(1) =
@@ -195,14 +244,28 @@ final class LoudnessEngine {
   /// Tick energies: all audio (momentary, short-term) and measured audio only (gating, LRA).
   private let ring: UnsafeMutablePointer<Double>
   private let gateRing: UnsafeMutablePointer<Double>
-  private let blocks = LoudnessHistogram(storesEnergy: true)
-  private let shortTerms = LoudnessHistogram(storesEnergy: false)
+  private let blocks: LoudnessHistogram
+  private let shortTerms: LoudnessHistogram
   let state: UnsafeMutablePointer<State>
 
   static let delaysPerChannel = 6
 
   init(sampleRate: Double, weights channelWeights: [Double], stage: PlanarStage) {
     self.sampleRate = sampleRate
+    // The stage clamps |sample| to 1e6. With at most 16 channels, +150
+    // LUFS leaves ample headroom for the supported K-weighting cascade even
+    // at that input limit. A larger custom weight only shifts this bound;
+    // allocate its extra histogram tail once, never on the audio thread.
+    // Scaling all the way to the largest weight needlessly underflows a
+    // quiet channel when a different, heavily weighted channel is silent.
+    // Half its exponent leaves both ends room: even Double.max weights
+    // and the stage's bounded samples keep tick energies far below overflow,
+    // while ordinary Float32 signals retain their full amplitude range.
+    let maximumWeight = max(1, channelWeights.max() ?? 1)
+    weightScale = maximumWeight.squareRoot()
+    energyLoudnessOffset = 10 * log10(weightScale)
+    blocks = LoudnessHistogram(storesEnergy: true, energyLoudnessOffset: energyLoudnessOffset, maximumLoudness: 150 + 10 * log10(maximumWeight))
+    shortTerms = LoudnessHistogram(storesEnergy: false, energyLoudnessOffset: energyLoudnessOffset, maximumLoudness: 150 + 10 * log10(maximumWeight))
     let (shelf, highPass) = KWeighting.filters(sampleRate: sampleRate)
     (tickFrames, ticksPerBlock) = meterTick(sampleRate: sampleRate)
     momentaryTicks = 4 * ticksPerBlock
@@ -300,12 +363,13 @@ final class LoudnessEngine {
     return sum
   }
 
+  private func scaledLoudness(_ energy: Double) -> Float {
+    energy > 0 ? Float(-0.691 + 10 * log10(energy) + energyLoudnessOffset) : -.infinity
+  }
+
   private func finishTick() {
-    var energy = 0.0
-    forEachIndex(activeCount) { c in
-      energy += weights[c] * energies[c]
-      energies[c] = 0
-    }
+    let energy = weightedTickEnergy(
+      energies, weights: weights, scale: weightScale, channelCount: activeCount)
     let st = state
     ring[st.pointee.ringHead] = energy
     st.pointee.ringHead = st.pointee.ringHead + 1 == shortTermTicks ? 0 : st.pointee.ringHead + 1
@@ -314,12 +378,12 @@ final class LoudnessEngine {
     let ticks = st.pointee.ticks
     let resetTicks = st.pointee.resetTicks
     if ticks >= momentaryTicks {
-      let l = loudnessLUFS(windowSum(ring, head: st.pointee.ringHead, momentaryTicks) / Double(momentaryTicks * tickFrames))
+      let l = scaledLoudness(windowSum(ring, head: st.pointee.ringHead, momentaryTicks) / Double(momentaryTicks * tickFrames))
       st.pointee.readings.momentary = l
       if resetTicks >= momentaryTicks { st.pointee.readings.momentaryMax = max(st.pointee.readings.momentaryMax, l) }
     }
     if ticks >= shortTermTicks {
-      let l = loudnessLUFS(windowSum(ring, head: st.pointee.ringHead, shortTermTicks) / Double(shortTermTicks * tickFrames))
+      let l = scaledLoudness(windowSum(ring, head: st.pointee.ringHead, shortTermTicks) / Double(shortTermTicks * tickFrames))
       st.pointee.readings.shortTerm = l
       if resetTicks >= shortTermTicks { st.pointee.readings.shortTermMax = max(st.pointee.readings.shortTermMax, l) }
     }
@@ -335,17 +399,17 @@ final class LoudnessEngine {
     if gateTicks >= momentaryTicks {
       let momentary = windowSum(gateRing, head: head, momentaryTicks) / Double(momentaryTicks * tickFrames)
       if momentary > 0 {
-        let l = -0.691 + 10 * log10(momentary)
+        let l = -0.691 + 10 * log10(momentary) + energyLoudnessOffset
         if l > -70 {
           blocks.add(loudness: l, energy: momentary)
-          st.pointee.readings.integrated = loudnessLUFS(blocks.gatedMeanEnergy())
+          st.pointee.readings.integrated = scaledLoudness(blocks.gatedMeanEnergy())
         }
       }
     }
     if gateTicks >= shortTermTicks {
       let shortTerm = windowSum(gateRing, head: head, shortTermTicks) / Double(shortTermTicks * tickFrames)
       if shortTerm > 0 {
-        let l = -0.691 + 10 * log10(shortTerm)
+        let l = -0.691 + 10 * log10(shortTerm) + energyLoudnessOffset
         if l >= -70 {
           shortTerms.add(loudness: l, energy: shortTerm)
           st.pointee.readings.loudnessRange = Float(shortTerms.loudnessRange())

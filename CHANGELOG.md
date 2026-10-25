@@ -2,6 +2,24 @@
 
 All notable changes to MonitorKit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, a minor version may change the public API; every such change is listed under **Changed** or **Removed**.
 
+## [0.1.2] - 2026-10-25
+
+### Added
+
+- `LevelMeterView` (MonitorKitUI): a broadcast true-peak level meter in three styles, compact, strip and full. Hard colour zones fixed in dB (green below −9, amber to −1, red from −1 dBTP), a hold line, an over latch that lights on a clipped sample or a true-peak maximum at −1 dBTP and stays lit until clicked, each channel's held maximum, one to sixteen channels, and one VoiceOver element with a Reset Peaks action. One `TimelineView(.animation(paused:))` and one Canvas per meter, one `snapshot()` per frame, the fall extrapolated between snapshots and readouts at 10 Hz.
+- `MeterScale.expandedPeak(unit:reference:cautionLevel:maximumPeak:)`: −60…0 dBTP with an expanded top and the SMPTE RP 155 −20 dBFS reference line; `zoneSpans`, `ticks` and `layout(level:hold:)` (`MeterZoneSpan`, `MeterTick`, `MeterChannelLayout`).
+- `MeterDisplayBallistics` and `MeterHoldLine`: a display's bar and hold line between snapshots.
+- `AudioChannelLevels.isOver(maximumTruePeak:)`, `AudioMeterSnapshot.isOver(maximumTruePeak:)` and `peakToLoudnessRatio`.
+- Phase correlation (`AudioMeterKinds.correlation`, on in `.all`): `AudioMeterSnapshot.correlation`, `AudioMeterConfiguration.correlationTime` and `correlationChannels`. Three vDSP passes per chunk inside `process`, no allocation.
+- `MeterText`: readout text with one decimal and a typographic minus, "−∞" for silence and "—" for no reading.
+- `MeterPalette.lightTrack`, `unlitOpacity`, `reference`, `latch`, `track(for:)` and `color(_:scheme:)`.
+
+### Changed
+
+- `AudioMeterView` draws the same bars as `LevelMeterView`'s full style: true peak by default on `MeterScale.expandedPeak()` with the red zone from −1 dBTP, hold lines, each channel's maximum and the over latch (clip LEDs are gone). The R 128 panel defaults to absolute LUFS (`loudnessUnit: .lufs`) with the −23 LUFS target line, adds PLR, and the panel adds a phase-correlation meter. The well stays dark in light appearance and the lines adapt. New parameters `present` and `name`. Reset Peaks also on the context menu; clicking the bars no longer resets.
+- `MeterPalette.standard`'s colours step in luminance as well as hue, for colour-blind viewers.
+- `LoudnessReadout` adds `peakToLoudnessRatio`.
+
 ## [0.1.1] - 2026-10-24
 
 ### Fixed
@@ -50,5 +68,6 @@ UI (`MonitorKitUI`):
 
 Documentation: README, FEATURES, API, INTEGRATION, ARCHITECTURE and MATH (every constant with its source and the test that checks it).
 
+[0.1.2]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.2
 [0.1.1]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.1
 [0.1.0]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.0

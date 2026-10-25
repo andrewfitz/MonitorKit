@@ -559,11 +559,15 @@ Pure Swift and Accelerate. Realtime-safe: everything is allocated at init; `proc
 | --- | --- |
 | `AudioMeter` | `init(configuration:)`, `init(sampleRate:channelCount:)` (throws `AudioMeterError`). `process(planar:frameCount:)` (Float32, Int16, Int32 pointers), `process(interleaved:frameCount:frameStride:)`, `process(bufferList:frameCount:format:)`; `snapshot()`, `publishCount`, `resetPeaks()`, `resetLoudness()`, `reset()`, `pauseLoudness()`, `resumeLoudness()`, `isLoudnessPaused`, `flush()` |
 | `AudioMeterConfiguration` | [FEATURES §8](FEATURES.md#8-audio); `ppmBallistics`, `loudnessChannels` |
-| `AudioMeterSnapshot` | `sequence`, `frameCount`, `channelCount`, `channels` (`InlineArray<16, AudioChannelLevels>`, or `snapshot[channel:]`), `loudness` (`LoudnessSnapshot`), `programmeChannelMask`, `maximumTruePeak`, `programmeMaximumTruePeak` (R 128 Max TP), `vuReferenceDBFS`, `ppmAlignmentDBFS` |
+| `AudioMeterSnapshot` | `sequence`, `frameCount`, `channelCount`, `channels` (`InlineArray<16, AudioChannelLevels>`, or `snapshot[channel:]`), `loudness` (`LoudnessSnapshot`), `programmeChannelMask`, `maximumTruePeak`, `programmeMaximumTruePeak` (R 128 Max TP), `vuReferenceDBFS`, `ppmAlignmentDBFS`, `correlation` |
 | `AudioChannelLevels`, `LoudnessSnapshot` | dBFS / dBTP / VU / PPM readings, clip count; M, S, I, LRA, maxima, duration |
 | `LoudnessMeter` | Loudness alone: `init(sampleRate:channels:)`, the same `process` overloads, `snapshot()`, `resetMeasurement()`, `reset()`, `pauseMeasurement()`, `resumeMeasurement()` |
 | `AudioMeterKinds`, `AlignmentLevel`, `PPMType`, `PPMBallistics`, `VUBallistics`, `RMSScale`, `LoudnessChannel`, `AudioSampleFormat`, `audioMeterMaximumChannelCount` | Configuration values |
-| `MeterScale`, `MeterScaleMark`, `MeterZone`, `MeterZoneKind`, `MeterScaleUnit`, `MeterScaleMapping`, `MeterScalePoint`, `LoudnessScaleRange` | Marks and zones: `digitalPeak(unit:range:alignment:maximumPeak:)`, `vu`, `ppm(_:)`, `ppmNordic`, `loudness(_:unit:target:)`; `position(of:)`, `zone(of:)` |
+| `MeterScale`, `MeterScaleMark`, `MeterZone`, `MeterZoneKind`, `MeterScaleUnit`, `MeterScaleMapping`, `MeterScalePoint`, `LoudnessScaleRange` | Marks and zones: `digitalPeak(unit:range:alignment:maximumPeak:)`, `expandedPeak(unit:reference:cautionLevel:maximumPeak:)`, `vu`, `ppm(_:)`, `ppmNordic`, `loudness(_:unit:target:)`; `position(of:)`, `zone(of:)`, `zoneSpans`, `ticks`, `layout(level:hold:)` |
+| `MeterZoneSpan`, `MeterTick`, `MeterChannelLayout` (`litSpans(_:)`) | A scale's zones and marks on the travel, and one channel's bar and hold line |
+| `MeterDisplayBallistics`, `MeterHoldLine` | A display's bar between snapshots (instant attack, extrapolated fall) and its hold line |
+| `AudioChannelLevels.isOver(maximumTruePeak:)`, `AudioMeterSnapshot.isOver(maximumTruePeak:)`, `peakToLoudnessRatio`, `correlation` | The over latch, PLR and phase correlation |
+| `MeterText` | Readout text: `level(_:present:)`, `signed(_:)`, `amount(_:)`, `number(_:)`, `correlation(_:)`, `peakToLoudnessRatio(maximumTruePeak:integrated:)`, `peakSummary(_:channels:present:)` |
 | `Biquad`, `KWeighting` | The BS.1770 K-weighting filters at any rate |
 
 ```swift
@@ -660,7 +664,8 @@ func hostDrivenView(engine: MonitorEngine, scene: MonitorScene, queue: MTLComman
 | `FalseColorLegend(settings:signal:layout:arriFullRange:)`, `FalseColorLegendView(legend:)` / `(legend:style:unavailable:)` | The legend of the active false colour, as a list or the captioned monitor legend |
 | `MonitorTileToolbar(state:name:signal:status:tools:unavailable:falseColorModes:layout:placement:scopesEnabled:onScopes:freeze:onFreeze:scopeSettings:)` | A compact tile toolbar; `MonitorTileTool`, `MonitorFreezeState` (`actionTitle`, `accessibilityValue`), `MonitorMagnifyChoice`, `MonitorTileToolbarPlacement` |
 | `ZebraControls`, `FalseColorControls`, `PeakingControls`, `GuideControls`, `GeometryControls`, `DisplayAdjustmentControls`, `LUTRoutingControls`, `OutputColorControls`, `ClipIndicatorControls`, `CleanSwitch`, `MonitorControlSection` | Editors of `MonitorState`; `Binding<MonitorState>.normalizing` clamps every write; `.monitorControlStyle()` |
-| `AudioMeterView(meter:kind:scale:loudness:loudnessUnit:target:channelLabels:palette:)`, `AudioMeterBarKind`, `MeterBarReading`, `LoudnessReadout`, `MeterPalette` | Bar meters with peak hold and clip LEDs, and the R 128 panel |
+| `LevelMeterView(meter:style:present:name:channelLabels:scale:palette:)` / `(snapshot:…)`, `LevelMeterStyle` (`.compact`, `.strip`, `.full`), `LevelMeterPart`, `LevelMeterView.layout(_:spans:reference:axis:size:gap:holdWidth:_:)` | A broadcast true-peak meter: zones fixed in dB, hold line, over latch, held maxima, Reset Peaks |
+| `AudioMeterView(meter:kind:scale:loudness:loudnessUnit:target:channelLabels:palette:present:name:)`, `AudioMeterBarKind`, `MeterBarReading`, `LoudnessReadout`, `MeterPalette` | The full panel: bars with maxima and the over latch, the R 128 panel in LUFS with PLR, phase correlation |
 
 ```swift
 import MonitorKit

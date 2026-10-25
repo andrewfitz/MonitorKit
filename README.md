@@ -55,10 +55,11 @@ MonitorKit is a Swift and Metal package that brings the monitoring assists of a 
 
 **Audio**
 - 1–16 channels of sample peak, BS.1770 true peak, RMS, VU and PPM (Type I, IIa, IIb)
-- EBU R 128 loudness: momentary, short-term, integrated, loudness range and max true peak
+- EBU R 128 loudness: momentary, short-term, integrated, loudness range, max true peak and PLR
+- Stereo phase correlation
 
 **Presentation**
-- SwiftUI monitor view, scope views, audio meters, false-colour legends and a tile toolbar
+- SwiftUI monitor view, scope views, broadcast level meters (compact, strip and full), false-colour legends and a tile toolbar
 - Freeze, multiview, clean feed, tally border, timecode and status overlays
 
 The [feature reference](Docs/FEATURES.md) lists every parameter, default and range, and compares each tool with the Sony FX3 and the Video Assist 12G HDR.
@@ -149,7 +150,7 @@ func deliver(_ pixelBuffer: CVPixelBuffer, cache: CVMetalTextureCache, to source
 }
 ```
 
-`MonitorView` draws on a `CAMetalDisplayLink`, tags its layer for SDR or EDR from the signal, follows the screen's EDR headroom, and turns pinch, scroll, drag and double-click into magnification. `ScopeView` and `ScopeStackView` add scopes of the same source, and `AudioMeterView` draws an `AudioMeter`.
+`MonitorView` draws on a `CAMetalDisplayLink`, tags its layer for SDR or EDR from the signal, follows the screen's EDR headroom, and turns pinch, scroll, drag and double-click into magnification. `ScopeView` and `ScopeStackView` add scopes of the same source, `LevelMeterView` draws an `AudioMeter` as a compact, strip or full true-peak meter, and `AudioMeterView` adds the R 128 loudness panel and phase correlation.
 
 ### Encoding into your own command buffer
 

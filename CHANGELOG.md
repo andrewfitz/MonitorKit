@@ -2,6 +2,21 @@
 
 All notable changes to MonitorKit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, a minor version may change the public API; every such change is listed under **Changed** or **Removed**.
 
+## [0.1.3] - 2026-10-25
+
+### Fixed
+
+- `LevelMeterView` and `AudioMeterView`: the hold line held 4 s instead of 2, because the meter's own hold, offered with every snapshot, kept restarting it; it now holds `peakHoldTime` from the last peak, then falls.
+- A peak reset from the host, `AudioMeterView`'s menu or VoiceOver restarts the hold line while audio is flowing; before, only a reset seen before the next audio did.
+- The bars and hold lines no longer freeze when the wall clock steps back: the meters keep their own clock, and `MeterDisplayBallistics` and `MeterHoldLine` treat a time before the last one as a new origin.
+- Drawing a frame builds no colours (a dimmed zone allocated for every unlit rectangle); readouts and the VoiceOver summary pause with the bars when there is no audio; fixed readings no longer offer a Reset Peaks action.
+- Red readouts keep 4.5:1 on the window in light and dark appearance; long channel labels truncate instead of widening the strip; the R 128 panel's Max TP reads "−∞ dBTP" in silence.
+- `MeterText.number` no longer traps on an infinite or huge value.
+
+### Changed
+
+- `AudioMeterSnapshot.correlation` is the Pearson correlation: the window's means come off, so a DC offset no longer pulls the reading towards +1 (unrelated noise with a common offset read +0.97), DC alone reads NaN and DC against signal reads 0. The window's moments are divided by its total weight, so the first time constants after a start or reset are unbiased. Five vDSP passes per chunk instead of three.
+
 ## [0.1.2] - 2026-10-25
 
 ### Added
@@ -68,6 +83,7 @@ UI (`MonitorKitUI`):
 
 Documentation: README, FEATURES, API, INTEGRATION, ARCHITECTURE and MATH (every constant with its source and the test that checks it).
 
+[0.1.3]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.3
 [0.1.2]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.2
 [0.1.1]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.1
 [0.1.0]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.0

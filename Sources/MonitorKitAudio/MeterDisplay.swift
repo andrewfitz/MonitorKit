@@ -175,10 +175,17 @@ public struct MeterDisplayBallistics: Sendable, Equatable {
   }
 
   /// A new snapshot's value arrived at `time` (seconds, any monotonic origin).
+  /// A time before the last arrival (a clock that stepped back) is a new
+  /// origin: the curves move with it, so the display carries on from where it
+  /// stood instead of holding until the clock catches up.
   public mutating func ingest(_ value: Double, at time: Double) {
     if let lastArrival, time > lastArrival {
       let interval = Swift.min(time - lastArrival, 0.1)
       lead = Swift.min(Swift.max(lead * 0.9 + 1.25 * interval * 0.1, 0.008), 0.1)
+    } else if let lastArrival, time < lastArrival {
+      let shift = time - lastArrival
+      attack.anchor += shift
+      latest.anchor += shift
     }
     lastArrival = time
     // A floor that is on top carries on as the attack curve: continuous, never lower.
@@ -216,8 +223,11 @@ public struct MeterHoldLine: Sendable, Equatable {
     peak - fallRate * Swift.max(0, time - anchor - holdTime)
   }
 
-  /// Takes `level` if it is at or above the line.
+  /// Takes `level` if it is at or above the line. A time before the line's
+  /// anchor (a clock that stepped back) restarts the hold from `time`, so the
+  /// line never waits for the clock to catch up.
   public mutating func offer(_ level: Double, at time: Double) {
+    if time < anchor { anchor = time }
     guard level.isFinite, level >= value(at: time) else { return }
     peak = level
     anchor = time
@@ -249,6 +259,8 @@ extension AudioMeterSnapshot {
 
   /// Peak-to-loudness ratio (EBU Tech 3342 note, AES TD1004): the
   /// programme's Max TP minus its integrated loudness, in LU; nil until both exist.
+  /// Max TP runs from the last peak reset and the integrated loudness from the
+  /// last loudness reset: to measure one programme, reset both at its start.
   public var peakToLoudnessRatio: Double? {
     MeterText.peakToLoudnessRatio(
       maximumTruePeak: Double(programmeMaximumTruePeak), integrated: Double(loudness.integrated))
@@ -283,9 +295,13 @@ public enum MeterText {
     return (t < 0 ? minus : "") + String(format: "%.1f", Swift.abs(t))
   }
 
-  /// A scale label: "−40", "0", "−4.5".
+  /// A scale label: "−40", "0", "−4.5"; "−∞" and "∞" at the ends, "—" for NaN.
   public static func number(_ value: Double) -> String {
-    let text = value == value.rounded() ? String(Int(Swift.abs(value))) : String(format: "%.1f", Swift.abs(value))
+    guard !value.isNaN else { return "—" }
+    let magnitude = Swift.abs(value)
+    let text =
+      magnitude.isInfinite
+      ? "∞" : String(format: magnitude == magnitude.rounded() ? "%.0f" : "%.1f", magnitude)
     return (value < 0 ? minus : "") + text
   }
 

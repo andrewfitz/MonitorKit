@@ -274,6 +274,107 @@ final class MeterDisplayTests: XCTestCase {
   }
 }
 
+// MARK: Audit regressions (0.1.3)
+
+extension MeterDisplayTests {
+  /// A clock that steps back is a new origin: the bar carries on falling from
+  /// where it stood instead of freezing until the clock catches up.
+  func testBallisticsCarryOnWhenTheClockStepsBack() {
+    var b = MeterDisplayBallistics()
+    b.ingest(-6, at: 1000)
+    let lead = b.lead
+    // An hour back, with a quieter snapshot.
+    b.ingest(-40, at: -2600)
+    XCTAssertEqual(b.value(at: -2600), -6, accuracy: 1e-9, "continuous across the step")
+    XCTAssertEqual(b.value(at: -2600 + 1.7 + lead), -26, accuracy: 1e-9, "and falls at 20 dB / 1.7 s")
+    b.ingest(-40, at: -2595)
+    XCTAssertEqual(b.value(at: -2595), -40, accuracy: 1e-9, "down to the next snapshot")
+  }
+
+  func testHoldLineCarriesOnWhenTheClockStepsBack() {
+    var h = MeterHoldLine()
+    h.offer(-6, at: 1000)
+    h.offer(-50, at: -2600)
+    XCTAssertEqual(h.value(at: -2600), -6, "still held")
+    XCTAssertEqual(h.value(at: -2600 + 2 + 1.7), -26, accuracy: 1e-9, "the hold restarts from the step, then falls")
+  }
+
+  /// First snapshot: shown at once, held for the default lead (1.25 frames at 24 fps).
+  func testFirstSnapshot() {
+    var b = MeterDisplayBallistics()
+    XCTAssertEqual(b.value(at: 0), -.infinity)
+    b.ingest(-12, at: 5)
+    XCTAssertEqual(b.lead, 1.25 / 24, accuracy: 1e-12)
+    XCTAssertEqual(b.value(at: 5), -12)
+    XCTAssertEqual(b.value(at: 5 + 1.25 / 24), -12, accuracy: 1e-12)
+    b.ingest(.nan, at: 5.01)
+    XCTAssertEqual(b.value(at: 5.01), -12, "a NaN snapshot is silence, not a reading")
+  }
+
+  /// After a 2 s stall the lead is pushed up once and settles back within a
+  /// second of 60 Hz snapshots; nothing ever reads above what was ingested.
+  func testLeadRecoversAfterAStall() {
+    var b = MeterDisplayBallistics()
+    var t = 0.0
+    for _ in 0..<120 {
+      b.ingest(-10, at: t)
+      t += 1.0 / 60
+    }
+    let settled = b.lead
+    XCTAssertEqual(settled, 1.25 / 60, accuracy: 0.002)
+    t += 2
+    b.ingest(-10, at: t)
+    XCTAssertLessThanOrEqual(b.lead, 0.1)
+    XCTAssertGreaterThan(b.lead, settled)
+    var highest = -Double.infinity
+    for _ in 0..<60 {
+      t += 1.0 / 60
+      b.ingest(-10, at: t)
+      for k in 0..<4 { highest = max(highest, b.value(at: t + Double(k) / 240)) }
+    }
+    XCTAssertLessThan(abs(b.lead - settled), 0.002, "settled again")
+    XCTAssertLessThanOrEqual(highest, -10, "no overshoot")
+  }
+
+  /// The mapping is monotonic over the whole scale and pins outside it.
+  func testExpandedScaleIsMonotonic() {
+    var last = -1.0
+    var v = -70.0
+    while v <= 6 {
+      let p = scale.position(of: v)
+      XCTAssertGreaterThanOrEqual(p, last, "\(v)")
+      XCTAssertTrue((0...1).contains(p))
+      last = p
+      v += 0.25
+    }
+    XCTAssertEqual(scale.position(of: .nan), 0)
+    XCTAssertEqual(scale.position(of: .infinity), 1)
+  }
+
+  /// Scale labels never trap: infinities print as such and NaN as no reading.
+  func testScaleNumberHandlesEveryValue() {
+    XCTAssertEqual(MeterText.number(-.infinity), "−∞")
+    XCTAssertEqual(MeterText.number(.infinity), "∞")
+    XCTAssertEqual(MeterText.number(.nan), "—")
+    XCTAssertEqual(MeterText.number(-1e300).count, 302, "a minus and 301 digits, no Int conversion")
+    XCTAssertEqual(MeterText.number(-4.5), "−4.5")
+    XCTAssertEqual(MeterText.number(-0.0), "0")
+    XCTAssertEqual(MeterText.number(-18), "−18")
+  }
+
+  /// The PLR of a programme is the Max TP and integrated loudness of the same audio.
+  func testPeakToLoudnessRatioOfAProgramme() throws {
+    let meter = try AudioMeter(sampleRate: 48000, channelCount: 2)
+    let sine = Signal.sine(frequency: 997, dBFS: -20, seconds: 5, sampleRate: 48000)
+    meter.feed(Signal(sampleRate: 48000, channels: [sine, sine]))
+    let s = meter.snapshot()
+    // A stereo 997 Hz sine at −20 dBFS reads about −20 LUFS (BS.1770 calibration, +3 dB for two channels).
+    let plr = try XCTUnwrap(s.peakToLoudnessRatio)
+    XCTAssertEqual(plr, Double(s.programmeMaximumTruePeak) - Double(s.loudness.integrated), accuracy: 1e-9)
+    XCTAssertEqual(plr, 0, accuracy: 0.3, "a sine's peak and loudness agree")
+  }
+}
+
 extension MeterDisplayTests {
   /// A DC offset is not audio: it neither pulls the correlation towards +1
   /// nor counts as signal.

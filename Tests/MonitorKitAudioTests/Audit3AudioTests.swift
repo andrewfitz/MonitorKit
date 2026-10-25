@@ -93,7 +93,7 @@ final class Audit3AudioTests: XCTestCase {
     }
     XCTAssertEqual(
       counts, [Int](repeating: 0, count: counts.count),
-      "first-call allocations per entry point; sizes: \(AllocationSizes.log)")
+      "first-call allocations per entry point: \(AllocationSizes.log)")
   }
 
   /// A zero-width scale (equal bounds, e.g. `digitalPeak(range: 0...0)`) or an
@@ -203,17 +203,25 @@ final class Audit3AudioTests: XCTestCase {
 /// same `malloc_logger` hook as `AllocationCounter`.
 enum AllocationSizes {
   static let capacity = 64
+  static let depth = 24
   nonisolated(unsafe) static let sizes = UnsafeMutablePointer<Int>.allocate(capacity: capacity)
+  nonisolated(unsafe) static let frames = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(
+    capacity: capacity * depth)
+  nonisolated(unsafe) static let frameCounts = UnsafeMutablePointer<Int32>.allocate(capacity: capacity)
   static let count = Atomic<Int>(0)
   static let thread = Atomic<UInt>(0)
-  /// Sizes seen by `unexplained`, one list per call, for failure messages.
-  nonisolated(unsafe) static var log: [[Int]] = []
+  /// Each call's allocations other than a metadata page, with their stacks.
+  nonisolated(unsafe) static var log: [String] = []
   static let logger: AllocationCounter.Logger = { type, _, arg2, arg3, _, _ in
     // stack_logging_type_alloc; realloc reports alloc | dealloc with its size third.
     guard type & 2 != 0 else { return }
     guard AllocationSizes.thread.load(ordering: .relaxed) == UInt(bitPattern: pthread_self()) else { return }
     let index = AllocationSizes.count.add(1, ordering: .relaxed).oldValue
-    if index < AllocationSizes.capacity { AllocationSizes.sizes[index] = Int(type & 4 != 0 ? arg3 : arg2) }
+    guard index < AllocationSizes.capacity else { return }
+    AllocationSizes.sizes[index] = Int(type & 4 != 0 ? arg3 : arg2)
+    // backtrace(3) walks frame pointers and does not allocate.
+    AllocationSizes.frameCounts[index] = backtrace(
+      AllocationSizes.frames + index * AllocationSizes.depth, Int32(AllocationSizes.depth))
   }
   /// `swift_debug_metadataAllocatorPageSize`: the size of each page the
   /// runtime's metadata allocator takes from malloc.
@@ -228,7 +236,7 @@ enum AllocationSizes {
     let slot = symbol.assumingMemoryBound(to: AllocationCounter.Logger?.self)
     // Touch the statics first so their lazy initialization does not run inside the hook.
     _ = logger
-    _ = sizes
+    _ = (sizes, frames, frameCounts, capacity, depth)
     let page = metadataPageSize
     count.store(0, ordering: .relaxed)
     thread.store(UInt(bitPattern: pthread_self()), ordering: .relaxed)
@@ -238,9 +246,37 @@ enum AllocationSizes {
     slot.pointee = previous
     thread.store(0, ordering: .relaxed)
     let total = count.load(ordering: .relaxed)
-    let seen = (0..<min(total, capacity)).map { sizes[$0] }
-    log.append(seen)
-    let pages = seen.contains { $0 == page } ? 1 : 0
+    var pages = 0
+    var report: [String] = []
+    for index in 0..<min(total, capacity) {
+      if pages == 0, sizes[index] == page {
+        pages = 1
+        continue
+      }
+      report.append("\(sizes[index]) B at " + stack(index))
+    }
+    log.append(report.isEmpty ? "none" : report.joined(separator: "; "))
     return total - pages
+  }
+
+  /// The recorded stack of allocation `index`, as image`symbol+offset frames.
+  static func stack(_ index: Int) -> String {
+    var parts: [String] = []
+    for frame in 0..<Int(frameCounts[index]) {
+      guard let address = frames[index * depth + frame] else { continue }
+      var info = Dl_info()
+      guard dladdr(address, &info) != 0 else {
+        parts.append("\(address)")
+        continue
+      }
+      var image = "?"
+      if let path = info.dli_fname { image = String(String(cString: path).split(separator: "/").last ?? "?") }
+      var name = "?"
+      if let symbol = info.dli_sname { name = String(cString: symbol) }
+      var offset = 0
+      if let base = info.dli_saddr { offset = Int(bitPattern: address) - Int(bitPattern: base) }
+      parts.append(image + "`" + name + "+" + String(offset))
+    }
+    return parts.joined(separator: " < ")
   }
 }

@@ -1,6 +1,6 @@
 # Integrating MonitorKit
 
-A step-by-step guide for hosts that own their GPU work: the Encode tier on classic Metal and on Metal 4, then the parts every monitor needs (HDR layers, multiview, Freeze, scopes, audio), the pitfalls, notes for moving from a hand-written monitor, and a worked example of a complete multi-camera host. For the batteries-included view (`MonitorView`), the [README](../README.md#1-a-monitor-view-monitorkitui) is enough.
+A step-by-step guide for hosts that own their GPU work: the Encode tier on classic Metal and on Metal 4, then the parts every monitor needs (HDR layers, multiview, Freeze, scopes, audio), the pitfalls, notes for moving from a hand-written monitor, and a worked example of a complete multi-camera host. For the batteries-included view (`MonitorView`), the [README](../README.md#a-monitor-view) is enough.
 
 Every Swift sample here was compiled against the package for the 0.1.0 release. The rules behind each step are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -18,6 +18,7 @@ Contents:
 10. [Worked example: a multi-camera monitor](#10-worked-example-a-multi-camera-monitor)
 11. [Pitfalls](#11-pitfalls)
 12. [Moving from a hand-written monitor](#12-moving-from-a-hand-written-monitor)
+13. [Fused tier: a burned-in LUT in your own kernel](#13-fused-tier-a-burned-in-lut-in-your-own-kernel)
 
 ## 1. The objects and where they live
 
@@ -122,7 +123,116 @@ The library never begins, ends or commits a Metal 4 command buffer and never cre
 7. **Barriers.** The library encodes the barriers its own reads and writes need (focus mask, Freeze planes, scope bins, loads of shared targets), and skips them once the writer's submission is known complete. You order your own writes to frames and targets. A host that reads a persistent target MonitorKit writes (samples or blits a multiview texture) ends its reading encoder with a producer barrier, so the next frame's write does not overtake the read. Drawables are covered by `waitForDrawable`.
 8. **Warm-up.** As on the classic path, plus `MonitorEngine(device:compiler:)` with your `MTL4Compiler` if your pipelines go through its lookup archives (asynchronous specialization uses it from compiler tasks; a compiler with a pipeline data set serializer crashes there on macOS 27, so give MonitorKit a plain one). For a warm start across launches, make both engines with a `cacheDirectory` instead (a subdirectory of your caches directory; the same one may serve both): they then build through their own `MonitorPipelineArchive` and a host `compiler` is unused. Warm them with `save: false` and save each archive once at the end (`engine.pipelineArchive?.save()`, `scopeEngine.pipelineArchive?.save()`), off the main thread; pipelines built later are saved by themselves a couple of seconds after the last one.
 
-The minimal host is in the [README](../README.md#3-encode-tier-metal-4); [section 10](#10-worked-example-a-multi-camera-monitor) is a complete one. The submission clock:
+### A minimal Metal 4 host
+
+The steps above in one place: an allocator pool, the submission clock, residency and the feedback handler.
+
+```swift
+import CoreVideo
+import Foundation
+import Metal
+import MonitorKit
+import QuartzCore
+import Synchronization
+
+/// Command allocators, reused once their command buffer has completed.
+final class AllocatorPool: @unchecked Sendable {
+  private let lock = NSLock()
+  private var free: [any MTL4CommandAllocator] = []
+
+  func take(_ device: MTLDevice) -> any MTL4CommandAllocator {
+    lock.withLock { free.popLast() } ?? device.makeCommandAllocator()!
+  }
+
+  func recycle(_ allocator: any MTL4CommandAllocator) {
+    allocator.reset()
+    lock.withLock { free.append(allocator) }
+  }
+}
+
+final class Metal4Host: @unchecked Sendable {
+  let device: MTLDevice
+  let queue: any MTL4CommandQueue  // one queue for all of an engine's work
+  let engine: MonitorEngine
+  let frames: MonitorTextureCache  // IOSurface-keyed textures, made and made resident once
+  private let clock = Mutex<(next: UInt64, completed: UInt64, done: Set<UInt64>)>((1, 0, []))
+  private let allocators = AllocatorPool()
+
+  init(device: MTLDevice, layer: CAMetalLayer) throws {
+    guard let queue = device.makeMTL4CommandQueue() else { throw MonitorKitError.gpu("No Metal 4 queue.") }
+    self.device = device
+    self.queue = queue
+    engine = try MonitorEngine(device: device)
+    frames = MonitorTextureCache(device: device, residency: engine.residency)
+    queue.addResidencySet(engine.residency.set)  // once: MonitorKit's resources and the cached frames
+    queue.addResidencySet(layer.residencySet)  // the drawables
+    try engine.warmUp()
+  }
+
+  /// One command buffer: `body` encodes into it, then it is committed with `drawable`.
+  /// Every index handed out is committed, so the completion watermark never stalls.
+  func submit(drawable: any CAMetalDrawable, keeping frame: MonitorFrame, _ body: (MonitorSubmission) throws -> Void)
+    throws
+  {
+    let allocator = allocators.take(device)
+    let commandBuffer = device.makeCommandBuffer()!
+    commandBuffer.beginCommandBuffer(allocator: allocator)
+    let (index, completed) = clock.withLock { s in
+      defer { s.next += 1 }
+      return (s.next, s.completed)
+    }
+    var failure: (any Error)?
+    do {
+      try body(MonitorSubmission(commandBuffer: commandBuffer, index: index, completedIndex: completed))
+    } catch {
+      failure = error
+    }
+    commandBuffer.endCommandBuffer()
+    let options = MTL4CommitOptions()
+    nonisolated(unsafe) let finished = allocator
+    options.addFeedbackHandler { [self] _ in
+      // Feedback can arrive out of order: advance only through contiguous indices.
+      let watermark = clock.withLock { s in
+        s.done.insert(index)
+        while s.done.remove(s.completed + 1) != nil { s.completed += 1 }
+        return s.completed
+      }
+      engine.residency.release(through: watermark)
+      _ = frame  // the frame (and its pixel buffer) lives until its work completed
+      allocators.recycle(finished)
+    }
+    queue.waitForDrawable(drawable)
+    queue.commit([commandBuffer], options: options)
+    queue.signalDrawable(drawable)
+    drawable.present()
+    if let failure { throw failure }
+  }
+}
+
+final class Metal4Monitor {
+  let host: Metal4Host
+  let feed: MonitorFeed
+  let pass: MonitorPass
+  var state = MonitorState()
+
+  init(host: Metal4Host) {
+    self.host = host
+    feed = host.engine.makeFeed()
+    pass = host.engine.makePass()
+  }
+
+  /// Once per display tick, on the render thread.
+  func draw(_ pixelBuffer: CVPixelBuffer, into drawable: any CAMetalDrawable) throws {
+    let frame = try host.frames.frame(pixelBuffer)
+    try host.submit(drawable: drawable, keeping: frame) { submission in
+      try feed.analyze(frame, focus: state.focus, into: submission)
+      try pass.encode(frame: frame, feed: feed, state: state, target: drawable.texture, into: submission)
+    }
+  }
+}
+```
+
+[Section 10](#10-worked-example-a-multi-camera-monitor) is a complete host. The same submission clock, as a reusable type:
 
 ```swift
 import Synchronization
@@ -593,3 +703,59 @@ Conventions a hand-written monitor often has, and their MonitorKit equivalents:
 | A plain 768 × 256, −10…110 IRE scope image | `ScopeSettings.plainWaveform(mode:stage:)` |
 | Clean aperture computed as `(H − h)/2 − verticalOffset` | Mirrored: the offset points down. Use `MonitorFrame.cleanAperture(of:)` |
 | Old settings JSON | Decode it with your own legacy type; never as `MonitorState` |
+
+## 13. Fused tier: a burned-in LUT in your own kernel
+
+Prepend MonitorKit's LUT and decode sources to your kernel and call `mk_decodeRGB` and `mk_applyLUT`. Compiled with `MonitorShaders.compileOptions`, the output carries exactly the values the monitor's output stage shows.
+
+```metal
+kernel void host_burnIn(texture2d<uint, access::read> packed [[texture(0)]],
+                        texture2d<float, access::read> luma [[texture(1)]],
+                        texture2d<float, access::read> chroma [[texture(2)]],
+                        texture3d<float, access::sample> lut [[texture(3)]],
+                        texture2d<float, access::write> output [[texture(4)]],
+                        constant mk_FrameParams& frame [[buffer(0)]],
+                        constant mk_LUTParams& lutParams [[buffer(1)]],
+                        uint2 xy [[thread_position_in_grid]]) {
+  if (xy.x >= frame.shape.y || xy.y >= frame.shape.z) return;
+  float3 rgb = mk_decodeRGB(packed, luma, chroma, xy, frame);
+  output.write(float4(saturate(mk_applyLUT(rgb, lut, lutParams)), 1), xy);
+}
+```
+
+```swift
+import Metal
+import MonitorKit
+
+/// `kernelSource` is the kernel above. `MonitorShaders.libraryDescriptor(parts:extra:)`
+/// gives the same unit to an `MTL4Compiler`.
+func makeBurnInPipeline(device: MTLDevice, kernelSource: String) throws -> MTLComputePipelineState {
+  let library = try MonitorShaders.makeLibrary(device: device, parts: [.lut, .decode], extra: kernelSource)
+  guard let function = library.makeFunction(name: "host_burnIn") else { throw MonitorKitError.gpu("host_burnIn") }
+  return try device.makeComputePipelineState(function: function)
+}
+
+/// `unusedPacked` (rgba32Uint) and `unusedPlane` (any float format) stand in for planes the layout lacks.
+func encodeBurnIn(
+  _ frame: MonitorFrame, lut: MonitorLUT, output: MTLTexture, pipeline: MTLComputePipelineState,
+  unusedPacked: MTLTexture, unusedPlane: MTLTexture, into commandBuffer: MTLCommandBuffer
+) {
+  guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+  encoder.setComputePipelineState(pipeline)
+  encoder.setTexture(frame.packed ?? unusedPacked, index: 0)
+  encoder.setTexture(frame.luma ?? unusedPlane, index: 1)
+  encoder.setTexture(frame.chroma ?? unusedPlane, index: 2)
+  encoder.setTexture(lut.texture, index: 3)
+  encoder.setTexture(output, index: 4)
+  var frameParameters = frame.parameters
+  encoder.setBytes(&frameParameters, length: MemoryLayout<FrameParameters>.stride, index: 0)
+  var lutParameters = lut.parameters
+  encoder.setBytes(&lutParameters, length: MemoryLayout<LUTParameters>.size, index: 1)
+  encoder.dispatchThreads(
+    MTLSize(width: frame.width, height: frame.height, depth: 1),
+    threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+  encoder.endEncoding()
+}
+```
+
+Give the same `MonitorLUT` to the monitor as `feed.burnInLUT`, so every preview shows the output's look. Never keep a copy of an older `MKLUT.msl` in your sources: the 80-byte layout is versioned (`MonitorShaders.lutLayoutVersion`), and a stale copy fails to compile rather than binding the wrong struct.

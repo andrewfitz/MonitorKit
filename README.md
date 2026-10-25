@@ -1,96 +1,125 @@
 # MonitorKit
 
-Professional video monitoring for Apple platforms, on the GPU, at zero overhead.
+**Professional video monitoring for Apple platforms: zebras, false colour, focus peaking, LUTs, HDR viewing, scopes and broadcast audio meters, rendered on the GPU with zero overhead.**
 
-MonitorKit is a Swift and Metal package that brings the monitoring assists of a camera monitor (zebras, false colour, focus peaking, frame guides, magnify, display LUTs, HDR viewing, waveform, vectorscope, histogram and broadcast audio meters) to any macOS or iOS app that shows video. Its feature set covers the monitoring tools found on cameras such as the Sony FX3 and monitors such as the Blackmagic Video Assist 12G HDR, and every constant traces to a published standard or manufacturer document.
+[![CI](https://github.com/andrewfitz/MonitorKit/actions/workflows/ci.yml/badge.svg)](https://github.com/andrewfitz/MonitorKit/actions/workflows/ci.yml)
+[![Swift 6.2+](https://img.shields.io/badge/Swift-6.2%2B-F05138?logo=swift&logoColor=white)](https://swift.org)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%2026%20%7C%20iOS%2026-0A84FF)](#requirements)
+[![SwiftPM](https://img.shields.io/badge/SwiftPM-compatible-34C759)](#installation)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-It is built to cost nothing compared with code written directly into the host. On its encode tiers it borrows the host's textures and command buffers, and on the frame path it copies no frame (Freeze is an explicit, opt-in copy), creates no queue or thread, never commits or waits, allocates nothing and reads nothing back from the GPU. The optional MonitorKitUI view tier can own a command queue and a display link for you instead ([ARCHITECTURE.md](Docs/ARCHITECTURE.md)). It encodes into classic `MTLCommandBuffer`s and into Metal 4 `MTL4CommandBuffer`s with bit-identical pixels.
+MonitorKit is a Swift and Metal package that brings the monitoring assists of a professional camera monitor to any macOS or iOS app that shows video. It covers the tools found on cameras such as the Sony FX3 and on field monitors such as the Blackmagic Video Assist 12G HDR, and every constant traces to a published standard or manufacturer document.
 
-- [Features](Docs/FEATURES.md): every tool, its parameters and defaults, and the device feature it follows
-- [API](Docs/API.md): every public type, by module, with threading and lifetime rules
-- [Integration guide](Docs/INTEGRATION.md): step by step, classic and Metal 4, with a worked example
-- [Architecture](Docs/ARCHITECTURE.md): the zero-overhead contract, barriers, lifetimes, data flow
-- [Math](Docs/MATH.md): every constant and formula with its source and the test that checks it
-- [Changelog](CHANGELOG.md)
-- [Contributing](CONTRIBUTING.md)
+- **Zero overhead.** Encodes into your command buffers and borrows your textures. On the frame path it copies no frame, allocates nothing, creates no queue or thread, never commits or waits, and reads nothing back from the GPU.
+- **Classic Metal and Metal 4.** The same pass encodes into an `MTLCommandBuffer` or an `MTL4CommandBuffer`, with bit-identical pixels.
+- **Accurate.** Every GPU path is tested against a CPU reference implementation, exact at classification boundaries.
+- **HDR-native.** Signal-native SDR, PQ, HLG and extended-linear output with EDR layer tagging; display transforms for viewing log and HDR sources on SDR screens.
+- **Use as much as you need.** Drop in a SwiftUI view, or encode into your own Metal pipeline, or fuse the LUT into your own kernel.
+- **No dependencies.** Shaders ship as source and compile at runtime, so no Metal toolchain is needed to build.
+
+## Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Getting started](#getting-started)
+- [Performance](#performance)
+- [Correctness and standards](#correctness-and-standards)
+- [Documentation](#documentation)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Features
 
-| Area | MonitorKit | Sony FX3 | Video Assist 12G HDR |
-| --- | --- | --- | --- |
-| Zebras | Two sets at once, each band (level ± range) or lower limit (level and above), any level −20…120 IRE, per-set signal stage | Two (Custom1 band, Custom2 lower limit) | One, above a threshold |
-| False colour | Sony S-Log3 (Monitor & Control Pattern 2), ARRI LogC3/LogC4 tables, ARRI-style on S-Log3, six-band display IRE, custom bands in IRE or stops | none | Fixed six-band |
-| Clip indicators | Per channel R, G, B and luma, over and under, with exact clip % readouts | none | none |
-| Focus | Peaking in five colours, coloured edges or traditional peak, continuous sensitivity, noise rejection, at source resolution | Peaking, three levels, four colours | Focus assist, edges or peak |
-| Magnify | 1:1 pixel-exact, 1–64× zoom, pan, navigator inset, sharp sampling, tools stay correct | Focus Magnifier | 2× and pinch zoom with inset |
-| Framing | 16 aspect guides plus custom (lines or matte), safe areas, thirds, square grid, diagonals, centre cross and dot, freely combined, drawn analytically | Aspect markers, safety zone, grids, centre marker | Frame guides, thirds, crosshair, centre dot |
-| Geometry | Anamorphic de-squeeze 1…4 (1.3, 1.33, 1.5, 1.65, 1.66, 1.8, 2), flip H/V/180°, clean aperture, pixel aspect ratio | De-squeeze, flip | De-squeeze, 180° |
-| LUTs | `.cube` 2³–65³ with 1D shaper, tetrahedral, trilinear or hardware; monitor-only and burn-in routing, stackable | Display LUT, baked PPLUT | Display 3D LUT |
-| Display transforms | Log to Rec.709 (S-Log3, LogC3, LogC4), PQ to SDR (BT.2408 EETF) and HLG to SDR (Report BT.2446-1 Method C), each followed by the BT.2407 gamut step, HDR passthrough with roll-off to the EDR headroom | Gamma Display Assist | HDR monitoring |
-| Picture | Brightness, contrast, saturation, white-point trim (temperature, tint), luma mono, blue only; picture stage (source, output, monitor) | Monitor brightness | Brightness, contrast, saturation, LCD calibration, Blue Only |
-| Output colour | Signal-native, SDR (BT.1886, sRGB, 2.2), extended linear, PQ, HLG on Rec.709, P3 or Rec.2020; EDR layer tagging; overlays at BT.2408 graphics white | | HDR override |
-| Scopes | Waveform (luma, RGB overlay, RGB parade, Y'CbCr parade), vectorscope (1/2/4×, 75/100 % targets for BT.601/709/2020, skin-tone line), histogram (luma, RGB overlay, parade, linear or log), IRE, code-value and HDR nit graticules, several at once, every pixel | Luma histogram | Waveform, parade, vectorscope, RGB histogram, one at a time |
-| Audio | 1–16 channels: sample peak, BS.1770 true peak, RMS, VU, PPM Type I / IIa / IIb, EBU R 128 loudness (M, S, I, LRA, Max TP) | Level meter | VU and PPM at −18 / −20 dBFS |
-| Status | Clean feed, timecode, tally border, format, LUT name and labels as SwiftUI overlays; Freeze; multiview | | Clean feed |
+**Exposure**
+- Zebras: two sets at once, each a band (level ± range) or a lower limit, from −20 to 120 IRE
+- False colour: Sony S-Log3 (Monitor & Control Pattern 2), ARRI LogC3 and LogC4, ARRI-style on S-Log3, six-band, and custom bands in IRE or stops
+- Clip indicators per channel (R, G, B, luma), over and under, with exact clip percentages
 
-The full parameter reference is [FEATURES.md](Docs/FEATURES.md).
+**Focus and framing**
+- Focus peaking in five colours, as coloured edges or a traditional peak, analysed at source resolution
+- Magnification: pixel-exact 1:1, 1–64× zoom with pan and a navigator inset
+- Frame guides: 16 aspect ratios plus custom, as lines or matte; safe areas, thirds, grid, diagonals, centre marks
+- Anamorphic de-squeeze (1.3× to 4×), flips, clean aperture and pixel aspect ratio
+
+**Colour and HDR**
+- `.cube` LUTs from 2³ to 65³, with 1D shapers and tetrahedral, trilinear or hardware interpolation, routed monitor-only or burned in, and stackable
+- Display transforms: log to Rec.709 (S-Log3, LogC3, LogC4), PQ to SDR (BT.2408 EETF), HLG to SDR (BT.2446-1 Method C)
+- Output in signal-native SDR (BT.1886, sRGB, gamma 2.2), extended linear, PQ or HLG, on Rec.709, P3 or Rec.2020; overlays at BT.2408 graphics white
+- Picture adjustments: brightness, contrast, saturation, white-point trim, mono and blue only
+
+**Scopes**
+- Waveform (luma, RGB overlay, RGB parade, Y'CbCr parade), vectorscope with 75 % and 100 % targets, and histogram
+- IRE, code-value and HDR nit graticules; several scopes at once, every pixel counted
+
+**Audio**
+- 1–16 channels of sample peak, BS.1770 true peak, RMS, VU and PPM (Type I, IIa, IIb)
+- EBU R 128 loudness: momentary, short-term, integrated, loudness range and max true peak
+
+**Presentation**
+- SwiftUI monitor view, scope views, audio meters, false-colour legends and a tile toolbar
+- Freeze, multiview, clean feed, tally border, timecode and status overlays
+
+The [feature reference](Docs/FEATURES.md) lists every parameter, default and range, and compares each tool with the Sony FX3 and the Video Assist 12G HDR.
 
 ## Requirements
 
-- macOS 26 or iOS 26 and later, on Apple silicon. The Metal 4 encode path needs a device that supports `MTLGPUFamily.metal4`; the classic path and the view tier do not.
-- Xcode 26 or later: Swift 6.2 tools, Swift 6 language mode. The package builds with warnings as errors.
-- No Metal toolchain: the shaders ship as `.msl` text and compile at runtime with the OS compiler.
-- No third-party dependencies.
+| | |
+| --- | --- |
+| Platforms | macOS 26 or iOS 26 and later, on Apple silicon |
+| Toolchain | Xcode 26 or later (Swift 6.2 tools, Swift 6 language mode); running the tests needs Xcode 26.6 or later |
+| Metal 4 path | A device that supports `MTLGPUFamily.metal4`. The classic path and the view tier have no such requirement |
+| Dependencies | None |
 
 ## Installation
 
-MonitorKit is a Swift package. In Xcode, choose File > Add Package Dependencies and enter `https://github.com/andrewfitz/MonitorKit.git`. In a `Package.swift`:
+Add MonitorKit with Swift Package Manager. In Xcode, choose **File › Add Package Dependencies** and enter:
 
-```swift
-// swift-tools-version: 6.2
-import PackageDescription
-
-let package = Package(
-  name: "MyApp",
-  platforms: [.macOS(.v26), .iOS(.v26)],
-  dependencies: [
-    .package(url: "https://github.com/andrewfitz/MonitorKit.git", from: "0.1.0"),
-  ],
-  targets: [
-    .target(
-      name: "MyApp",
-      dependencies: [
-        .product(name: "MonitorKit", package: "MonitorKit"),
-        .product(name: "MonitorKitScopes", package: "MonitorKit"),
-        .product(name: "MonitorKitAudio", package: "MonitorKit"),
-        .product(name: "MonitorKitUI", package: "MonitorKit"),
-      ]),
-  ]
-)
+```
+https://github.com/andrewfitz/MonitorKit.git
 ```
 
-Depend only on the products you use; each pulls in what it needs (table below).
+Or add it to your `Package.swift`:
+
+```swift
+dependencies: [
+  .package(url: "https://github.com/andrewfitz/MonitorKit.git", from: "0.1.0"),
+],
+targets: [
+  .target(
+    name: "MyApp",
+    dependencies: [
+      .product(name: "MonitorKit", package: "MonitorKit"),
+      .product(name: "MonitorKitUI", package: "MonitorKit"),
+    ]),
+]
+```
+
+Depend only on the products you use; each one brings in what it needs.
 
 | Product | Contents | Depends on |
 | --- | --- | --- |
-| `MonitorKitCore` | Settings (`MonitorState`), signal descriptions, geometry, `.cube` parsing, output colour, and the CPU reference math the GPU is tested against. Pure Swift | — |
-| `MonitorKit` | The picture pass, focus analysis, LUTs, Freeze, multiview, the Metal 4 types (re-exports `MonitorKitCore`) | Core |
-| `MonitorKitScopes` | Waveform, vectorscope, histogram and their statistics on the GPU | MonitorKit |
+| `MonitorKitCore` | Settings (`MonitorState`), signal descriptions, geometry, `.cube` parsing, output colour, and the CPU reference math. Pure Swift | — |
+| `MonitorKit` | The picture pass, focus analysis, LUTs, Freeze, multiview and the Metal 4 types. Re-exports `MonitorKitCore` | Core |
+| `MonitorKitScopes` | Waveform, vectorscope and histogram, with their statistics, on the GPU | MonitorKit |
 | `MonitorKitAudio` | Level meters and loudness. Pure Swift and Accelerate | — |
-| `MonitorKitUI` | `MonitorMetalView`, `MonitorRenderer`, SwiftUI views, controls, legends, meters | all |
+| `MonitorKitUI` | `MonitorView`, `MonitorMetalView`, scope and meter views, controls and legends | All of the above |
 
-## Quick start
+## Getting started
 
-MonitorKit has four integration tiers. Pick the one that matches how much of the pipeline your app owns.
+MonitorKit offers four integration tiers. Choose the one that matches how much of the GPU pipeline your app already owns.
 
-| Tier | You do | MonitorKit does |
+| Tier | Your app provides | MonitorKit provides |
 | --- | --- | --- |
-| **View** (MonitorKitUI) | Put a `MonitorView` in your SwiftUI hierarchy and hand it frames | Everything: layer, display link, colour tagging, gestures, scopes |
-| **Encode, classic** | Own an `MTLCommandQueue` and the drawable | Encodes into your `MTLCommandBuffer` |
-| **Encode, Metal 4** | Own an `MTL4CommandQueue`, the residency sets and the completion watermark | Encodes into your `MTL4CommandBuffer` with its own argument tables, uniforms and barriers |
-| **Fused** | Own a compute kernel (e.g. your output encoder) | Ships `MKLUT.msl` and `MKDecode.msl` to prepend, so a burned-in LUT costs no extra pass |
+| **View** (`MonitorKitUI`) | A SwiftUI view and a stream of frames | Everything: the layer, display link, colour tagging, gestures and scopes |
+| **Encode, classic Metal** | An `MTLCommandQueue` and the drawable | Encoding into your `MTLCommandBuffer` |
+| **Encode, Metal 4** | An `MTL4CommandQueue`, residency sets and a completion watermark | Encoding into your `MTL4CommandBuffer`, with its own argument tables, uniforms and barriers |
+| **Fused** | Your own compute kernel, such as an output encoder | `MKLUT.msl` and `MKDecode.msl` to prepend, so a burned-in LUT costs no extra pass |
 
-### 1. A monitor view (MonitorKitUI)
+### A monitor view
+
+The view tier needs a few lines of SwiftUI and a call per captured frame:
 
 ```swift
 import CoreVideo
@@ -120,9 +149,11 @@ func deliver(_ pixelBuffer: CVPixelBuffer, cache: CVMetalTextureCache, to source
 }
 ```
 
-`MonitorView` draws on a `CAMetalDisplayLink`, tags its layer for SDR or EDR from the signal, follows the screen's EDR headroom, and turns pinch, scroll, drag and double click into magnification. `ScopeView` and `ScopeStackView` add scopes of the same source; `AudioMeterView` draws an `AudioMeter`.
+`MonitorView` draws on a `CAMetalDisplayLink`, tags its layer for SDR or EDR from the signal, follows the screen's EDR headroom, and turns pinch, scroll, drag and double-click into magnification. `ScopeView` and `ScopeStackView` add scopes of the same source, and `AudioMeterView` draws an `AudioMeter`.
 
-### 2. Encode tier, classic Metal
+### Encoding into your own command buffer
+
+If your app already renders with Metal, MonitorKit encodes into the command buffer you commit:
 
 ```swift
 import Metal
@@ -157,237 +188,89 @@ final class ClassicMonitor {
 }
 ```
 
-### 3. Encode tier, Metal 4
+### Going further
 
-MonitorKit never begins, ends or commits a Metal 4 command buffer. The host numbers its submissions from 1 and reports the highest *contiguous* completed index; the library uses it to reuse uniform slots and to release replaced resources only once the GPU is done with them.
-
-```swift
-import CoreVideo
-import Foundation
-import Metal
-import MonitorKit
-import QuartzCore
-import Synchronization
-
-/// Command allocators, reused once their command buffer has completed.
-final class AllocatorPool: @unchecked Sendable {
-  private let lock = NSLock()
-  private var free: [any MTL4CommandAllocator] = []
-
-  func take(_ device: MTLDevice) -> any MTL4CommandAllocator {
-    lock.withLock { free.popLast() } ?? device.makeCommandAllocator()!
-  }
-
-  func recycle(_ allocator: any MTL4CommandAllocator) {
-    allocator.reset()
-    lock.withLock { free.append(allocator) }
-  }
-}
-
-final class Metal4Host: @unchecked Sendable {
-  let device: MTLDevice
-  let queue: any MTL4CommandQueue  // one queue for all of an engine's work
-  let engine: MonitorEngine
-  let frames: MonitorTextureCache  // IOSurface-keyed textures, made and made resident once
-  private let clock = Mutex<(next: UInt64, completed: UInt64, done: Set<UInt64>)>((1, 0, []))
-  private let allocators = AllocatorPool()
-
-  init(device: MTLDevice, layer: CAMetalLayer) throws {
-    guard let queue = device.makeMTL4CommandQueue() else { throw MonitorKitError.gpu("No Metal 4 queue.") }
-    self.device = device
-    self.queue = queue
-    engine = try MonitorEngine(device: device)
-    frames = MonitorTextureCache(device: device, residency: engine.residency)
-    queue.addResidencySet(engine.residency.set)  // once: MonitorKit's resources and the cached frames
-    queue.addResidencySet(layer.residencySet)  // the drawables
-    try engine.warmUp()
-  }
-
-  /// One command buffer: `body` encodes into it, then it is committed with `drawable`.
-  /// Every index handed out is committed, so the completion watermark never stalls.
-  func submit(drawable: any CAMetalDrawable, keeping frame: MonitorFrame, _ body: (MonitorSubmission) throws -> Void)
-    throws
-  {
-    let allocator = allocators.take(device)
-    let commandBuffer = device.makeCommandBuffer()!
-    commandBuffer.beginCommandBuffer(allocator: allocator)
-    let (index, completed) = clock.withLock { s in
-      defer { s.next += 1 }
-      return (s.next, s.completed)
-    }
-    var failure: (any Error)?
-    do {
-      try body(MonitorSubmission(commandBuffer: commandBuffer, index: index, completedIndex: completed))
-    } catch {
-      failure = error
-    }
-    commandBuffer.endCommandBuffer()
-    let options = MTL4CommitOptions()
-    nonisolated(unsafe) let finished = allocator
-    options.addFeedbackHandler { [self] _ in
-      // Feedback can arrive out of order: advance only through contiguous indices.
-      let watermark = clock.withLock { s in
-        s.done.insert(index)
-        while s.done.remove(s.completed + 1) != nil { s.completed += 1 }
-        return s.completed
-      }
-      engine.residency.release(through: watermark)
-      _ = frame  // the frame (and its pixel buffer) lives until its work completed
-      allocators.recycle(finished)
-    }
-    queue.waitForDrawable(drawable)
-    queue.commit([commandBuffer], options: options)
-    queue.signalDrawable(drawable)
-    drawable.present()
-    if let failure { throw failure }
-  }
-}
-
-final class Metal4Monitor {
-  let host: Metal4Host
-  let feed: MonitorFeed
-  let pass: MonitorPass
-  var state = MonitorState()
-
-  init(host: Metal4Host) {
-    self.host = host
-    feed = host.engine.makeFeed()
-    pass = host.engine.makePass()
-  }
-
-  /// Once per display tick, on the render thread.
-  func draw(_ pixelBuffer: CVPixelBuffer, into drawable: any CAMetalDrawable) throws {
-    let frame = try host.frames.frame(pixelBuffer)
-    try host.submit(drawable: drawable, keeping: frame) { submission in
-      try feed.analyze(frame, focus: state.focus, into: submission)
-      try pass.encode(frame: frame, feed: feed, state: state, target: drawable.texture, into: submission)
-    }
-  }
-}
-```
-
-### 4. Fused tier: a burned-in LUT in your own kernel
-
-Prepend MonitorKit's LUT and decode sources to your kernel and call `mk_decodeRGB` and `mk_applyLUT`. Compiled with `MonitorShaders.compileOptions`, the output carries exactly the values the monitor's output stage shows.
-
-```metal
-kernel void host_burnIn(texture2d<uint, access::read> packed [[texture(0)]],
-                        texture2d<float, access::read> luma [[texture(1)]],
-                        texture2d<float, access::read> chroma [[texture(2)]],
-                        texture3d<float, access::sample> lut [[texture(3)]],
-                        texture2d<float, access::write> output [[texture(4)]],
-                        constant mk_FrameParams& frame [[buffer(0)]],
-                        constant mk_LUTParams& lutParams [[buffer(1)]],
-                        uint2 xy [[thread_position_in_grid]]) {
-  if (xy.x >= frame.shape.y || xy.y >= frame.shape.z) return;
-  float3 rgb = mk_decodeRGB(packed, luma, chroma, xy, frame);
-  output.write(float4(saturate(mk_applyLUT(rgb, lut, lutParams)), 1), xy);
-}
-```
-
-```swift
-import Metal
-import MonitorKit
-
-/// `kernelSource` is the kernel above. `MonitorShaders.libraryDescriptor(parts:extra:)`
-/// gives the same unit to an `MTL4Compiler`.
-func makeBurnInPipeline(device: MTLDevice, kernelSource: String) throws -> MTLComputePipelineState {
-  let library = try MonitorShaders.makeLibrary(device: device, parts: [.lut, .decode], extra: kernelSource)
-  guard let function = library.makeFunction(name: "host_burnIn") else { throw MonitorKitError.gpu("host_burnIn") }
-  return try device.makeComputePipelineState(function: function)
-}
-
-/// `unusedPacked` (rgba32Uint) and `unusedPlane` (any float format) stand in for planes the layout lacks.
-func encodeBurnIn(
-  _ frame: MonitorFrame, lut: MonitorLUT, output: MTLTexture, pipeline: MTLComputePipelineState,
-  unusedPacked: MTLTexture, unusedPlane: MTLTexture, into commandBuffer: MTLCommandBuffer
-) {
-  guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
-  encoder.setComputePipelineState(pipeline)
-  encoder.setTexture(frame.packed ?? unusedPacked, index: 0)
-  encoder.setTexture(frame.luma ?? unusedPlane, index: 1)
-  encoder.setTexture(frame.chroma ?? unusedPlane, index: 2)
-  encoder.setTexture(lut.texture, index: 3)
-  encoder.setTexture(output, index: 4)
-  var frameParameters = frame.parameters
-  encoder.setBytes(&frameParameters, length: MemoryLayout<FrameParameters>.stride, index: 0)
-  var lutParameters = lut.parameters
-  encoder.setBytes(&lutParameters, length: MemoryLayout<LUTParameters>.size, index: 1)
-  encoder.dispatchThreads(
-    MTLSize(width: frame.width, height: frame.height, depth: 1),
-    threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
-  encoder.endEncoding()
-}
-```
-
-Give the same `MonitorLUT` to the monitor as `feed.burnInLUT`, so every preview shows the output's look. Never keep a copy of an older `MKLUT.msl` in your sources: the 80-byte layout is versioned (`MonitorShaders.lutLayoutVersion`), and a stale copy fails to compile rather than binding the wrong struct.
+- **Metal 4:** the [integration guide](Docs/INTEGRATION.md#4-metal-4-step-by-step) walks through submission indices, the completion watermark and residency, with a complete host.
+- **Fused LUT:** to burn a LUT into your own output kernel with pixels identical to the monitor's Output stage, see [the fused tier](Docs/INTEGRATION.md#13-fused-tier-a-burned-in-lut-in-your-own-kernel).
+- **A complete multi-camera host:** see the [worked example](Docs/INTEGRATION.md#10-worked-example-a-multi-camera-monitor).
 
 ## Performance
 
-Measured on an Apple M4 Max by the package's benchmark tests, which also enforce the budgets (`swift test --filter 'Benchmark'`). GPU times are command-buffer GPU timestamps (`gpuEndTime − gpuStartTime`): ten warm-up buffers are discarded, then the minimum of the following runs (60 by default, cases that are compared interleaved) is taken, because the GPU is shared with other work. CPU times are medians of steady-state encodes in debug and release builds. GPU and debug CPU numbers from 2026-10-24, release CPU and audio from 2026-10-22; your hardware will differ. Picture-pass figures are the costlier of the two all-tools cases each budget covers (LUTs, zebras, peaking and guides; and every tool with six-band false colour).
+Measured on an Apple M4 Max. The package's benchmark tests also enforce each budget (`swift test --filter Benchmark`).
 
 | Work | Measured | Budget |
 | --- | --- | --- |
 | Picture pass, 4K v210 source, every tool on, into 1080p | 0.26 ms | ≤ 0.35 ms |
-| … into 1600 × 900 | 0.30 ms | ≤ 0.40 ms |
-| … into 720p / 540p | 0.20 / 0.13 ms | ≤ 0.5 ms |
 | … into 2560 × 1440 | 0.50 ms | ≤ 0.55 ms |
-| … into 4K 1:1 | 0.70 ms | ≤ 0.8 ms |
-| Every output encoding (PQ and HLG included) vs signal-native SDR | PQ +13 %, HLG +15 %, SDR +6–9 %, extended linear +7 % (tools off) | ≤ 1.10× + 10 µs |
-| Display transforms vs signal-native SDR | +11 to +24 % (tools off) | not budgeted |
-| Focus mask, 4K, source stage | 0.089 ms | ≤ 0.24 ms |
-| Focus mask, 4K, after a 33³ LUT | 0.34 ms tetrahedral, 0.48 ms trilinear | ≤ 0.4 / 0.55 ms |
-| Four 4K feeds (4 analyses, 4 × 1080p and 4 × 540p surfaces) into one 4K target | 1.38 ms in one `MonitorMultiview` pass (1.71 ms as eight passes) | ≤ 2.0 ms |
-| Scope accumulation of every 4K pixel, one scope | 0.25–0.36 ms | ≤ 1 ms |
-| Waveform, vectorscope and histogram fused in one `ScopeGroup`, 4K | 0.56 ms source stage, 0.74 ms output stage | ≤ 1 ms |
-| Freeze of a 4K v210 frame | 0.047 ms (22.3 MB of planes while frozen) | ≤ 0.5 ms |
-| CPU per surface, classic encode | 8.0 µs debug, 6.5 µs release | < 30 µs debug |
-| CPU per surface, Metal 4 render encode | 9.6 µs debug, 5.3 µs release | ≤ 15 / 10 µs |
-| CPU, Metal 4 compute encode / host prepare + draw / analysis | 7.6 / 4.6 / 4.4 µs debug | ≤ 10 µs |
-| Heap allocations per steady-state frame (debug builds included) | 0 | 0 |
-| Audio, every meter on 16 channels at 48 kHz | 0.30 % of one core (release) | < 1 % |
+| … into 4K, 1:1 | 0.70 ms | ≤ 0.8 ms |
+| Four 4K feeds into one 4K multiview | 1.38 ms | ≤ 2.0 ms |
+| Focus analysis, 4K | 0.089 ms | ≤ 0.24 ms |
+| Waveform, vectorscope and histogram together, every 4K pixel | 0.56 ms | ≤ 1 ms |
+| Freeze of a 4K frame | 0.047 ms | ≤ 0.5 ms |
+| CPU encode per surface, release build (classic / Metal 4) | 6.5 / 5.3 µs | — |
+| Heap allocations per steady-state frame | 0 | 0 |
+| Audio, every meter on 16 channels at 48 kHz | 0.30 % of one core | < 1 % |
 
-Memory is owned only where a feature needs it: an r8 focus mask at source size while peaking is on (8.3 MB at 4K), Freeze planes while frozen, scope bins sized to the scope (not the frame), and on Metal 4 one small uniform ring per object. A surface owns no GPU memory on the classic path.
+GPU times are the minimum of 60 command-buffer timestamps after ten warm-ups; CPU times are medians of steady-state encodes. Your hardware will differ. The full table, including every output encoding and display transform, is in [ARCHITECTURE.md](Docs/ARCHITECTURE.md#quality-bars).
+
+Memory is allocated only where a feature needs it: a focus mask at source size while peaking is on (8.3 MB at 4K), Freeze planes while frozen, and scope bins sized to the scope rather than the frame. On the classic path a surface owns no GPU memory.
 
 ## Correctness and standards
 
-Every GPU path is tested against a CPU reference in `MonitorKitCore`: exact at classification boundaries (code 940 is exactly 100 IRE everywhere), within 1/1023 for decode, 1e−4 for LUT interpolation and 1e−5 for the output-colour paths. Classic and Metal 4 encodes produce bit-identical bytes. The suite runs clean under `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1`.
+Every GPU path is tested against a CPU reference in `MonitorKitCore`:
+- exact at classification boundaries (code 940 is exactly 100 IRE everywhere);
+- within 1/1023 for decode;
+- within 1e−4 for LUT interpolation;
+- within 1e−5 for output colour.
 
-Constants and formulas come from, among others:
+Classic and Metal 4 encodes produce bit-identical bytes, and the suite runs clean under Metal API and shader validation.
 
-- ITU-R BT.601, BT.709, BT.1886, BT.2020, BT.2100, BT.2087, Reports BT.2407, BT.2408 and BT.2446 (Y'CbCr, transfers, HLG, PQ, reference levels, the PQ-to-SDR EETF, the HLG-to-SDR conversion, gamut conversion)
-- SMPTE ST 2084 (PQ), RP 177 (primary matrices), ST 240, RP 219 / BT.2111 (colour bars), ITU-T H.273 (chroma siting)
-- IEC 61966-2-1 (sRGB), CIE 15 and ANSI C78.377 (daylight locus, Duv), ISO/IEC 14496-12 (clean aperture, pixel aspect)
-- Sony S-Log3 / S-Gamut3 technical summary and Monitor & Control false colour; ARRI LogC3, LogC4 and LogC false-colour specifications
-- ITU-R BS.1770, EBU R 128, Tech 3341 and 3342 (loudness, true peak); IEC 60268-10, -17 and -18 (PPM, VU, digital peak); EBU R 68 and SMPTE RP 155 (alignment)
+The math follows published sources, including:
 
-[MATH.md](Docs/MATH.md) lists each one with its value, where it is used, the test that checks it, and every place MonitorKit deliberately chose a convention.
+- **Video:** ITU-R BT.601, BT.709, BT.1886, BT.2020, BT.2100, BT.2087; Reports BT.2407, BT.2408 and BT.2446; SMPTE ST 2084, RP 177, ST 240; ITU-T H.273
+- **Colour:** IEC 61966-2-1 (sRGB), CIE 15, ANSI C78.377, ISO/IEC 14496-12
+- **Camera:** Sony S-Log3 and S-Gamut3 technical summaries and Monitor & Control false colour; ARRI LogC3, LogC4 and LogC false-colour specifications
+- **Audio:** ITU-R BS.1770, EBU R 128, Tech 3341 and 3342, IEC 60268-10, -17 and -18, EBU R 68, SMPTE RP 155
 
-## Status and roadmap
+[MATH.md](Docs/MATH.md) gives every constant with its value, its source, where it is used and the test that checks it.
 
-Version 0.1.0 is the first public release. The API is complete for the features above. Until 1.0, minor versions may change the API; each change is listed in the [changelog](CHANGELOG.md).
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [Features](Docs/FEATURES.md) | Every tool, its parameters and defaults, and the device behaviour it follows |
+| [API](Docs/API.md) | Every public type by module, with threading and lifetime rules |
+| [Integration guide](Docs/INTEGRATION.md) | Classic Metal and Metal 4 step by step, HDR, multiview, scopes, audio, and a worked example |
+| [Architecture](Docs/ARCHITECTURE.md) | The zero-overhead contract, data flow, barriers, lifetimes and performance |
+| [Math](Docs/MATH.md) | Every formula and constant, with its source and test |
+| [Changelog](CHANGELOG.md) | Release history |
+
+## Roadmap
+
+MonitorKit is at 0.1. The API covers every feature above; until 1.0, minor versions may change it, and every change is listed in the [changelog](CHANGELOG.md).
 
 Planned:
-
-- More camera log encodings for false colour and the display transforms: Canon Log 2/3, Panasonic V-Log, Blackmagic Film, RED Log3G10, Apple Log, Fujifilm F-Log2, Nikon N-Log, DJI D-Log, with their gamuts. Today: S-Log3 (S-Gamut3, S-Gamut3.Cine), ARRI LogC3 (AWG3) and LogC4 (AWG4).
-- Sony Pattern 1 (SDR) false colour; a hue-preserving BT.709 gamut step for HDR → SDR (BT.2407 Annex 5; today §2's clip); HDR and wide-gamut LUT outputs (today every LUT outputs Rec.709).
-- Scopes that follow the clean aperture; fail-closed JSON for `ScopeSettings`.
-- Performance: the compute picture's threadgroup shape.
-- iOS: verified at compile time only so far (gestures, `UIScreen` headroom and background pausing have not run on a device).
-- An example host app, and DocC articles beside the API reference.
+- More camera log encodings: Canon Log 2 and 3, Panasonic V-Log, Blackmagic Film, RED Log3G10, Apple Log, Fujifilm F-Log2, Nikon N-Log and DJI D-Log
+- Sony Pattern 1 (SDR) false colour
+- A hue-preserving gamut step for HDR to SDR (BT.2407 Annex 5)
+- HDR and wide-gamut LUT outputs
+- Scopes that follow the clean aperture
+- On-device verification on iOS (today it is compile-checked)
+- An example app and DocC articles
 
 ## Contributing
 
-Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Please keep to the [architecture contract](Docs/ARCHITECTURE.md): no allocation, copy, queue, thread, commit or readback on the frame path; constants with a cited source in [MATH.md](Docs/MATH.md); a CPU reference and a GPU test for every pixel path. Run `swift test` (GPU tests skip without a Metal device) and, for GPU changes, the suite under `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1`.
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first; in short:
+- keep the frame path free of allocations, copies and GPU readback;
+- cite a source in [MATH.md](Docs/MATH.md) for every constant;
+- add a CPU reference and a GPU test for every pixel path.
+
+To report a security issue, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-MonitorKit is available under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+MonitorKit is released under the [Apache License 2.0](LICENSE). Copyright © 2026 Andrew Fitzgerald.
 
-Copyright 2026 Andrew Daniel.
+Sony, FX3, S-Log3 and S-Gamut3 are trademarks of Sony Group Corporation. ARRI, ALEXA and LogC are trademarks of Arnold & Richter Cine Technik GmbH & Co. Betriebs KG. Blackmagic Design, Video Assist and DaVinci Resolve are trademarks of Blackmagic Design Pty. Ltd. Panasonic is a trademark of Panasonic Holdings Corporation. Apple, Metal, macOS and iOS are trademarks of Apple Inc. Other names are trademarks of their respective owners.
 
-## Trademarks
-
-Sony, FX3, S-Log3 and S-Gamut3 are trademarks of Sony Group Corporation or its affiliates. ARRI, ALEXA and LogC are trademarks of Arnold & Richter Cine Technik GmbH & Co. Betriebs KG. Blackmagic Design, Video Assist and DaVinci Resolve are trademarks of Blackmagic Design Pty. Ltd. Panasonic is a trademark of Panasonic Holdings Corporation. Apple, Metal, macOS and iOS are trademarks of Apple Inc. Other product and company names mentioned in this repository are trademarks or registered trademarks of their respective owners.
-
-MonitorKit is an independent open-source project. It is not affiliated with, sponsored or endorsed by any of these companies. Their names are used only to identify the standard or device behaviour a feature follows. MonitorKit contains none of their code or LUTs; where a mode reproduces published values (for example ARRI's false-colour code-value tables), [MATH.md](Docs/MATH.md) names the public document they come from.
+MonitorKit is an independent project, not affiliated with or endorsed by any of these companies. Their names identify the standard or device behaviour a feature follows. MonitorKit contains none of their code or LUTs; where a mode reproduces published values, [MATH.md](Docs/MATH.md) names the public source.

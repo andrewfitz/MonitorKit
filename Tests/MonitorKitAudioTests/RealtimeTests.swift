@@ -1,4 +1,4 @@
-// Copyright 2026 Andrew Daniel
+// Copyright 2026 Andrew Fitzgerald
 // SPDX-License-Identifier: Apache-2.0
 
 import AVFoundation

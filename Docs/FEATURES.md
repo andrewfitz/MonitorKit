@@ -6,6 +6,7 @@ Product names identify the feature a mode follows. A user interface should name 
 
 Contents:
 
+- [At a glance](#at-a-glance): MonitorKit beside the Sony FX3 and the Video Assist 12G HDR
 1. [How tools are configured](#1-how-tools-are-configured)
 2. [Exposure](#2-exposure): zebras, false colour, clip indicators
 3. [Scopes](#3-scopes): waveform, vectorscope, histogram, statistics
@@ -16,6 +17,25 @@ Contents:
 8. [Audio](#8-audio): level meters and loudness
 9. [Why a tool is not drawn](#9-why-a-tool-is-not-drawn)
 10. [Out of scope](#10-out-of-scope)
+
+## At a glance
+
+| Area | MonitorKit | Sony FX3 | Video Assist 12G HDR |
+| --- | --- | --- | --- |
+| Zebras | Two sets at once, each band (level ± range) or lower limit (level and above), any level −20…120 IRE, per-set signal stage | Two (Custom1 band, Custom2 lower limit) | One, above a threshold |
+| False colour | Sony S-Log3 (Monitor & Control Pattern 2), ARRI LogC3/LogC4 tables, ARRI-style on S-Log3, six-band display IRE, custom bands in IRE or stops | none | Fixed six-band |
+| Clip indicators | Per channel R, G, B and luma, over and under, with exact clip % readouts | none | none |
+| Focus | Peaking in five colours, coloured edges or traditional peak, continuous sensitivity, noise rejection, at source resolution | Peaking, three levels, four colours | Focus assist, edges or peak |
+| Magnify | 1:1 pixel-exact, 1–64× zoom, pan, navigator inset, sharp sampling, tools stay correct | Focus Magnifier | 2× and pinch zoom with inset |
+| Framing | 16 aspect guides plus custom (lines or matte), safe areas, thirds, square grid, diagonals, centre cross and dot, freely combined, drawn analytically | Aspect markers, safety zone, grids, centre marker | Frame guides, thirds, crosshair, centre dot |
+| Geometry | Anamorphic de-squeeze 1…4 (1.3, 1.33, 1.5, 1.65, 1.66, 1.8, 2), flip H/V/180°, clean aperture, pixel aspect ratio | De-squeeze, flip | De-squeeze, 180° |
+| LUTs | `.cube` 2³–65³ with 1D shaper, tetrahedral, trilinear or hardware; monitor-only and burn-in routing, stackable | Display LUT, baked PPLUT | Display 3D LUT |
+| Display transforms | Log to Rec.709 (S-Log3, LogC3, LogC4), PQ to SDR (BT.2408 EETF) and HLG to SDR (Report BT.2446-1 Method C), each followed by the BT.2407 gamut step, HDR passthrough with roll-off to the EDR headroom | Gamma Display Assist | HDR monitoring |
+| Picture | Brightness, contrast, saturation, white-point trim (temperature, tint), luma mono, blue only; picture stage (source, output, monitor) | Monitor brightness | Brightness, contrast, saturation, LCD calibration, Blue Only |
+| Output colour | Signal-native, SDR (BT.1886, sRGB, 2.2), extended linear, PQ, HLG on Rec.709, P3 or Rec.2020; EDR layer tagging; overlays at BT.2408 graphics white | | HDR override |
+| Scopes | Waveform (luma, RGB overlay, RGB parade, Y'CbCr parade), vectorscope (1/2/4×, 75/100 % targets for BT.601/709/2020, skin-tone line), histogram (luma, RGB overlay, parade, linear or log), IRE, code-value and HDR nit graticules, several at once, every pixel | Luma histogram | Waveform, parade, vectorscope, RGB histogram, one at a time |
+| Audio | 1–16 channels: sample peak, BS.1770 true peak, RMS, VU, PPM Type I / IIa / IIb, EBU R 128 loudness (M, S, I, LRA, Max TP) | Level meter | VU and PPM at −18 / −20 dBFS |
+| Status | Clean feed, timecode, tally border, format, LUT name and labels as SwiftUI overlays; Freeze; multiview | | Clean feed |
 
 ## 1. How tools are configured
 

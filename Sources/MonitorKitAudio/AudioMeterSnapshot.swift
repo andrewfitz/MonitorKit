@@ -114,6 +114,13 @@ public struct AudioMeterSnapshot: Sendable, BitwiseCopyable {
   /// The levels behind `vu` and `ppm`, so a UI can convert to dBFS.
   public var vuReferenceDBFS: Float
   public var ppmAlignmentDBFS: Float
+  /// Phase correlation of the stereo pair (`AudioMeterConfiguration.correlationChannels`),
+  /// -1 (out of phase) to +1 (mono): the normalized cross-correlation
+  /// E[LR] / sqrt(E[L²] E[R²]) over an exponential window of
+  /// `correlationTime`. 0 when only one side carries signal. NaN when the
+  /// meter is off, there is one channel, or both sides are below -70 dBFS
+  /// (nothing to correlate).
+  public var correlation: Float
 
   public init() {
     sequence = 0
@@ -124,6 +131,7 @@ public struct AudioMeterSnapshot: Sendable, BitwiseCopyable {
     programmeChannelMask = 0
     vuReferenceDBFS = -18
     ppmAlignmentDBFS = -18
+    correlation = .nan
   }
 
   public subscript(channel: Int) -> AudioChannelLevels {

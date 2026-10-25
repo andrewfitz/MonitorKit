@@ -161,8 +161,12 @@ public struct AudioMeterKinds: OptionSet, Sendable, Hashable {
   public static let ppm = AudioMeterKinds(rawValue: 1 << 4)
   /// BS.1770-4 / EBU R 128 programme loudness over the configured channels.
   public static let loudness = AudioMeterKinds(rawValue: 1 << 5)
+  /// Phase correlation of the programme's stereo pair, -1 to +1 (see
+  /// `AudioMeterSnapshot.correlation`). Needs at least two channels; three
+  /// vDSP passes per chunk.
+  public static let correlation = AudioMeterKinds(rawValue: 1 << 6)
 
-  public static let all: AudioMeterKinds = [.samplePeak, .truePeak, .rms, .vu, .ppm, .loudness]
+  public static let all: AudioMeterKinds = [.samplePeak, .truePeak, .rms, .vu, .ppm, .loudness, .correlation]
 }
 
 /// A channel's role in BS.1770-4 programme loudness (Table 3 weights).
@@ -286,6 +290,11 @@ public struct AudioMeterConfiguration: Sendable, Equatable {
   /// a reset publishes at once, and `AudioMeter.flush()` (or a zero-length
   /// `process` call) publishes what is pending when a stream stops.
   public var publishInterval: Double
+  /// The phase-correlation meter's integration time constant, in seconds
+  /// (exponential). No standard sets it; 0.3 s follows the common
+  /// correlation-meter practice of a reading that settles about as fast as a
+  /// PPM's fall.
+  public var correlationTime: Double
 
   /// A configuration for `channelCount` channels at `sampleRate`, every meter on
   /// by default, with EBU alignment and IEC ballistics.
@@ -304,7 +313,8 @@ public struct AudioMeterConfiguration: Sendable, Equatable {
     rmsWindow: Double = 0.3,
     rmsScale: RMSScale = .aes17,
     loudnessChannels: [LoudnessChannel]? = nil,
-    publishInterval: Double = 0.005
+    publishInterval: Double = 0.005,
+    correlationTime: Double = 0.3
   ) {
     self.sampleRate = sampleRate
     self.channelCount = channelCount
@@ -321,10 +331,23 @@ public struct AudioMeterConfiguration: Sendable, Equatable {
     self.rmsScale = rmsScale
     self.loudnessLayout = loudnessChannels
     self.publishInterval = publishInterval
+    self.correlationTime = correlationTime
   }
 
   /// The ballistics the PPM runs.
   public var ppmBallistics: PPMBallistics { customPPMBallistics ?? ppmType.ballistics }
+
+  /// The channels the correlation meter compares: the loudness layout's
+  /// `.left` and `.right` when it has both, otherwise channels 0 and 1; nil
+  /// for a single channel.
+  public var correlationChannels: (left: Int, right: Int)? {
+    guard channelCount >= 2 else { return nil }
+    let layout = loudnessChannels
+    if layout.count == channelCount, let l = layout.firstIndex(of: .left), let r = layout.firstIndex(of: .right) {
+      return (l, r)
+    }
+    return (0, 1)
+  }
 
   func validate() throws(AudioMeterError) {
     try validateFormat(sampleRate: sampleRate, channelCount: channelCount)
@@ -342,6 +365,7 @@ public struct AudioMeterConfiguration: Sendable, Equatable {
     else { throw .invalidParameter("vuBallistics") }
     guard rmsWindow > 0, rmsWindow <= 60 else { throw .invalidParameter("rmsWindow") }
     guard publishInterval >= 0, publishInterval <= 1 else { throw .invalidParameter("publishInterval") }
+    guard correlationTime > 0, correlationTime <= 60 else { throw .invalidParameter("correlationTime") }
     let ppm = ppmBallistics
     guard min(ppm.fastTimeConstant, ppm.slowTimeConstant) * sampleRate >= 1,
       ppm.fastTimeConstant.isFinite, ppm.slowTimeConstant.isFinite,

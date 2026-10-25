@@ -9,7 +9,8 @@ import Synchronization
 /// (BS.1770-4 Annex 2) with hold and decay, RMS, VU (IEC 60268-17), quasi-peak
 /// PPM (IEC 60268-10 Type I / IIa / IIb) and, optionally, BS.1770-4 programme
 /// loudness over a configurable channel layout, with EBU Tech 3341 pause
-/// and continue of the integrated measurement.
+/// and continue of the integrated measurement, and the stereo pair's phase
+/// correlation.
 ///
 /// Realtime-safe: everything is allocated at init; `process` does no heap
 /// allocation, takes no lock and uses no Swift concurrency. Call `process` from
@@ -88,6 +89,10 @@ public final class AudioMeter: @unchecked Sendable {
     /// into the filter that a stream already running when metering starts
     /// never had; a stream that starts from silence starts at 0 either way.
     var primed = false
+    /// The correlation meter's exponentially weighted mean products: L·R, L², R².
+    var correlationLR = 0.0
+    var correlationLL = 0.0
+    var correlationRR = 0.0
   }
 
   static let chunkFrames = 256
@@ -130,6 +135,10 @@ public final class AudioMeter: @unchecked Sendable {
   private let runsVU: Bool
   private let runsPPM: Bool
   private let runsRMS: Bool
+  /// The correlation meter's pair, or nil when it is off.
+  private let correlationPair: (left: Int, right: Int)?
+  /// 1 / (correlationTime × sample rate): the window's per-frame weight.
+  private let correlationRate: Double
   private let tickFrames: Int
   private let publishFrames: Int
   private let rmsTicks: Int
@@ -155,6 +164,8 @@ public final class AudioMeter: @unchecked Sendable {
     runsVU = kinds.contains(.vu)
     runsPPM = kinds.contains(.ppm)
     runsRMS = kinds.contains(.rms)
+    correlationPair = kinds.contains(.correlation) ? configuration.correlationChannels : nil
+    correlationRate = 1 / (configuration.correlationTime * fs)
     interpolator = TruePeakInterpolator(oversampling: TruePeakFilter.oversampling(sampleRate: fs))
     ppmInput = PPMInput.forSampleRate(fs)
     precondition(ppmInput.lanes <= 4, "the PPM takes at most four values per step")
@@ -422,6 +433,7 @@ public final class AudioMeter: @unchecked Sendable {
       forEachIndex(value.channelCount) { value.channels[$0] = AudioChannelLevels() }
       value.loudness = LoudnessSnapshot()
       value.frameCount = 0
+      value.correlation = .nan
       return
     }
     if requested.peaks != applied.peaks {
@@ -455,6 +467,7 @@ public final class AudioMeter: @unchecked Sendable {
         scalars.pointee.primed = true
       }
       forEachIndex(groupCount) { measure(group: $0, frames: n, decay: decay) }
+      if let pair = correlationPair { correlate(pair, frames: n) }
       advanceRMSTicks(n)
       scalars.pointee.ppmCarry = (scalars.pointee.ppmCarry + n) % ppmInput.fold
       loudness?.process(frames: n)
@@ -611,6 +624,40 @@ public final class AudioMeter: @unchecked Sendable {
     }
   }
 
+  /// Folds the chunk's mean products into the correlation window: three vDSP
+  /// passes, one exp() per chunk.
+  private func correlate(_ pair: (left: Int, right: Int), frames n: Int) {
+    let l = UnsafePointer(stage.samples(pair.left))
+    let r = UnsafePointer(stage.samples(pair.right))
+    let length = vDSP_Length(n)
+    var lr: Float = 0
+    var ll: Float = 0
+    var rr: Float = 0
+    vDSP_dotpr(l, 1, r, 1, &lr, length)
+    vDSP_svesq(l, 1, &ll, length)
+    vDSP_svesq(r, 1, &rr, length)
+    // The chunk's mean enters with the weight its length has in the window.
+    let keep = exp(-Double(n) * correlationRate)
+    let take = (1 - keep) / Double(n)
+    let s = scalars
+    s.pointee.correlationLR = s.pointee.correlationLR * keep + Double(lr) * take
+    s.pointee.correlationLL = s.pointee.correlationLL * keep + Double(ll) * take
+    s.pointee.correlationRR = s.pointee.correlationRR * keep + Double(rr) * take
+  }
+
+  /// Mean square of -70 dBFS: below it on both sides there is nothing to correlate.
+  static let correlationFloor = pow(10, -70.0 / 10)
+
+  private var correlationReading: Float {
+    let s = scalars.pointee
+    let floor = Self.correlationFloor
+    if s.correlationLL < floor && s.correlationRR < floor { return .nan }
+    // One side silent: uncorrelated.
+    if s.correlationLL < floor * 1e-3 || s.correlationRR < floor * 1e-3 { return 0 }
+    let c = s.correlationLR / (s.correlationLL * s.correlationRR).squareRoot()
+    return Float(min(1, max(-1, c)))
+  }
+
   private func advanceRMSTicks(_ n: Int) {
     let total = scalars.pointee.tickPosition + n
     let closed = total / tickFrames
@@ -647,6 +694,7 @@ public final class AudioMeter: @unchecked Sendable {
       staging.pointee.readings.channels[c] = levels
     }
     if let loudness { staging.pointee.readings.loudness = loudness.state.pointee.readings }
+    if correlationPair != nil { staging.pointee.readings.correlation = correlationReading }
     publisher.publish(&staging.pointee)
   }
 

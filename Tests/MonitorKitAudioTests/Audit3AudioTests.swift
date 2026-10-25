@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import AVFoundation
+import Darwin
 import Foundation
 import MonitorKitAudio
+import Synchronization
 import XCTest
 
 /// Third audit round: regressions for the audio module's fixes.
@@ -14,6 +16,10 @@ final class Audit3AudioTests: XCTestCase {
   /// allocations on the audio thread). Metadata and key paths are cached
   /// process-wide, so this only catches a regression when it is the first
   /// bufferList call in the process (run alone); in a full suite it is weak.
+  /// One allocation of exactly the Swift runtime's metadata page is tolerated
+  /// per call: any first use of any type can make the runtime's metadata pool
+  /// take a new page, so whether one lands here depends on what ran before (it
+  /// did on CI runners, where the GPU tests skip). Every other allocation fails.
   func testFirstProcessCallsDoNotAllocate() throws {
     guard AllocationCounter.allocations({ _ = [Int](repeating: 1, count: Int.random(in: 1000...2000)) }) ?? 0 > 0 else {
       throw XCTSkip("malloc_logger is not honoured on this system")
@@ -58,26 +64,26 @@ final class Audit3AudioTests: XCTestCase {
       try int32.withUnsafeBufferPointer { i32 in
         try float.withUnsafeBufferPointer { f in
           [
-            try XCTUnwrap(AllocationCounter.allocations {
+            try XCTUnwrap(AllocationSizes.unexplained {
               meters[0].process(bufferList: list, frameCount: frames, format: .float32)
             }),
-            try XCTUnwrap(AllocationCounter.allocations {
+            try XCTUnwrap(AllocationSizes.unexplained {
               loudnessList.process(bufferList: list, frameCount: frames, format: .float32)
             }),
-            try XCTUnwrap(AllocationCounter.allocations { meters[1].process(planar: block.pointers, frameCount: frames) }),
-            try XCTUnwrap(AllocationCounter.allocations { meters[2].process(planar: UnsafePointer(readOnly), frameCount: frames) }),
-            try XCTUnwrap(AllocationCounter.allocations { meters[3].process(planar: UnsafePointer(planar16), frameCount: frames) }),
-            try XCTUnwrap(AllocationCounter.allocations { meters[4].process(planar: UnsafePointer(planar32), frameCount: frames) }),
-            try XCTUnwrap(AllocationCounter.allocations { meters[5].process(interleaved: f.baseAddress!, frameCount: frames) }),
-            try XCTUnwrap(AllocationCounter.allocations { meters[6].process(interleaved: i16.baseAddress!, frameCount: frames) }),
-            try XCTUnwrap(AllocationCounter.allocations { meters[7].process(interleaved: i32.baseAddress!, frameCount: frames) }),
-            try XCTUnwrap(AllocationCounter.allocations {
+            try XCTUnwrap(AllocationSizes.unexplained { meters[1].process(planar: block.pointers, frameCount: frames) }),
+            try XCTUnwrap(AllocationSizes.unexplained { meters[2].process(planar: UnsafePointer(readOnly), frameCount: frames) }),
+            try XCTUnwrap(AllocationSizes.unexplained { meters[3].process(planar: UnsafePointer(planar16), frameCount: frames) }),
+            try XCTUnwrap(AllocationSizes.unexplained { meters[4].process(planar: UnsafePointer(planar32), frameCount: frames) }),
+            try XCTUnwrap(AllocationSizes.unexplained { meters[5].process(interleaved: f.baseAddress!, frameCount: frames) }),
+            try XCTUnwrap(AllocationSizes.unexplained { meters[6].process(interleaved: i16.baseAddress!, frameCount: frames) }),
+            try XCTUnwrap(AllocationSizes.unexplained { meters[7].process(interleaved: i32.baseAddress!, frameCount: frames) }),
+            try XCTUnwrap(AllocationSizes.unexplained {
               meters[8].restart()
               meters[8].process(planar: block.pointers, frameCount: 1)
               meters[8].flush()
               _ = meters[8].snapshot()
             }),
-            try XCTUnwrap(AllocationCounter.allocations {
+            try XCTUnwrap(AllocationSizes.unexplained {
               loudnessPlanar.process(planar: block.pointers, frameCount: frames)
               _ = loudnessPlanar.snapshot()
             }),
@@ -85,7 +91,9 @@ final class Audit3AudioTests: XCTestCase {
         }
       }
     }
-    XCTAssertEqual(counts, [Int](repeating: 0, count: counts.count), "first-call allocations per entry point")
+    XCTAssertEqual(
+      counts, [Int](repeating: 0, count: counts.count),
+      "first-call allocations per entry point; sizes: \(AllocationSizes.log)")
   }
 
   /// A zero-width scale (equal bounds, e.g. `digitalPeak(range: 0...0)`) or an
@@ -188,5 +196,51 @@ final class Audit3AudioTests: XCTestCase {
       offset += n
     }
     meter.flush()
+  }
+}
+
+/// Records the size of each heap allocation made on this thread, through the
+/// same `malloc_logger` hook as `AllocationCounter`.
+enum AllocationSizes {
+  static let capacity = 64
+  nonisolated(unsafe) static let sizes = UnsafeMutablePointer<Int>.allocate(capacity: capacity)
+  static let count = Atomic<Int>(0)
+  static let thread = Atomic<UInt>(0)
+  /// Sizes seen by `unexplained`, one list per call, for failure messages.
+  nonisolated(unsafe) static var log: [[Int]] = []
+  static let logger: AllocationCounter.Logger = { type, _, arg2, arg3, _, _ in
+    // stack_logging_type_alloc; realloc reports alloc | dealloc with its size third.
+    guard type & 2 != 0 else { return }
+    guard AllocationSizes.thread.load(ordering: .relaxed) == UInt(bitPattern: pthread_self()) else { return }
+    let index = AllocationSizes.count.add(1, ordering: .relaxed).oldValue
+    if index < AllocationSizes.capacity { AllocationSizes.sizes[index] = Int(type & 4 != 0 ? arg3 : arg2) }
+  }
+  /// `swift_debug_metadataAllocatorPageSize`: the size of each page the
+  /// runtime's metadata allocator takes from malloc.
+  static let metadataPageSize: Int? = dlsym(
+    UnsafeMutableRawPointer(bitPattern: -2), "_swift_debug_metadataAllocatorPageSize"
+  ).map { $0.load(as: Int.self) }
+
+  /// Allocations made by `body`, less at most one runtime metadata page; nil
+  /// when the hook is unavailable.
+  static func unexplained(_ body: () -> Void) -> Int? {
+    guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "malloc_logger") else { return nil }
+    let slot = symbol.assumingMemoryBound(to: AllocationCounter.Logger?.self)
+    // Touch the statics first so their lazy initialization does not run inside the hook.
+    _ = logger
+    _ = sizes
+    let page = metadataPageSize
+    count.store(0, ordering: .relaxed)
+    thread.store(UInt(bitPattern: pthread_self()), ordering: .relaxed)
+    let previous = slot.pointee
+    slot.pointee = logger
+    body()
+    slot.pointee = previous
+    thread.store(0, ordering: .relaxed)
+    let total = count.load(ordering: .relaxed)
+    let seen = (0..<min(total, capacity)).map { sizes[$0] }
+    log.append(seen)
+    let pages = seen.contains { $0 == page } ? 1 : 0
+    return total - pages
   }
 }

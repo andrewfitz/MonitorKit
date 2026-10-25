@@ -14,7 +14,7 @@ final class Audit3ControlsTests: XCTestCase {
   /// Core keeps some values past a slider's range (a pinch zoom to 32× on the
   /// 1…16 Zoom slider, a host's zebra level below 0). A VoiceOver increment
   /// used to clamp 32 to 16, a drop; a decrement below the range used to raise it.
-  func testVoiceOverStepNeverMovesAgainstItsDirection() {
+  @MainActor func testVoiceOverStepNeverMovesAgainstItsDirection() {
     XCTAssertEqual(ValueSlider.adjusted(32, increment: true, in: 1...16, step: 0.1), 32)
     XCTAssertEqual(ValueSlider.adjusted(32, increment: false, in: 1...16, step: 0.1), 31.9, accuracy: 1e-12)
     XCTAssertEqual(ValueSlider.adjusted(-10, increment: false, in: 0...109, step: 1), -10)

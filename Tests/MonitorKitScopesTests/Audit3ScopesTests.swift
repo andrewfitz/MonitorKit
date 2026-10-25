@@ -15,6 +15,7 @@ final class Audit3ScopesTests: XCTestCase {
   /// frame size change between accumulations matches fresh accumulators every
   /// time, classic and Metal 4.
   func testGroupFollowsMidSequenceEditsAndFrameSizes() throws {
+    _ = try GPU.require()
     let engine = try XCTUnwrap(GPU.synchronousEngine)
     var settings: [ScopeSettings] = [
       ScopeSettings(kind: .waveform, stage: .source), ScopeSettings(kind: .histogram, stage: .source),
@@ -83,6 +84,7 @@ final class Audit3ScopesTests: XCTestCase {
   /// Audit coverage (no defect found): a flat frame filling 16-bit packed bins
   /// to exactly 65535 matches 32-bit bins.
   func testPackedBinsAtTheirLimitMatchWideBins() throws {
+    _ = try GPU.require()
     let engine = try XCTUnwrap(GPU.synchronousEngine)
     let frame = try TestFrame.make(
       .bgra8, width: 320, height: 13107, rgb: { _, _ in SIMD3(0.5, 0.5, 0.5) }, mirror: false)

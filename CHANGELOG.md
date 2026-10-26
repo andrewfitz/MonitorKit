@@ -2,6 +2,12 @@
 
 All notable changes to MonitorKit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, a minor version may change the public API; every such change is listed under **Changed** or **Removed**.
 
+## [0.1.7] - 2026-10-26
+
+### Fixed
+
+- 0.1.6 did not build with Xcode 26 (Swift 6.2): two meter views copied a property into a local of the same name after the property's first use in the same body. The copies now come first.
+
 ## [0.1.6] - 2026-10-26
 
 ### Changed
@@ -135,6 +141,7 @@ UI (`MonitorKitUI`):
 
 Documentation: README, FEATURES, API, INTEGRATION, ARCHITECTURE and MATH (every constant with its source and the test that checks it).
 
+[0.1.7]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.7
 [0.1.6]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.6
 [0.1.5]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.5
 [0.1.4]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.4

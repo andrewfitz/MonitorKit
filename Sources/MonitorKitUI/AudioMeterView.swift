@@ -429,11 +429,12 @@ struct KindColumns: View {
   @State private var animator = LevelMeterAnimator()
 
   var body: some View {
-    let spans = scale.zoneSpans
-    let reference = scale.alignment.map { scale.position(of: $0) }
-    let gap = LevelMeterView.rows(.full, channels: labels.count).gap
+    // Copies for the drawing closure, declared before any use of the properties they shadow.
     let meter = meter, kind = kind, scale = scale, n = labels.count, present = present
     let animator = animator, onTick = onTick
+    let spans = scale.zoneSpans
+    let reference = scale.alignment.map { scale.position(of: $0) }
+    let gap = LevelMeterView.rows(.full, channels: n).gap
     VStack(alignment: .leading, spacing: 4) {
       HStack(alignment: .top, spacing: 3) {
         LevelMeterRuler(ticks: scale.ticks, axis: .vertical, inset: 5).frame(width: 26)
@@ -477,9 +478,10 @@ struct LoudnessPanel: View {
   @State private var readouts = LoudnessReadouts()
 
   var body: some View {
+    // Copies for the drawing closure, declared before any use of the properties they shadow.
+    let meter = meter, scale = scale, unit = unit, target = target, readouts = readouts
     let spans = scale.zoneSpans
     let reference = scale.alignment.map { scale.position(of: $0) }
-    let meter = meter, scale = scale, unit = unit, target = target, readouts = readouts
     HStack(alignment: .top, spacing: 8) {
       VStack(alignment: .leading, spacing: 4) {
         Text(unit == .lu ? "LU" : "LUFS").font(.system(size: 9)).foregroundStyle(.secondary)

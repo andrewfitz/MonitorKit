@@ -38,12 +38,14 @@ public enum LevelMeterPart: Equatable, Sendable {
 /// lights on a clipped sample or a true-peak maximum at −1 dBTP or above and
 /// stays lit until clicked.
 ///
-/// One `TimelineView(.animation(paused:))` draws every channel in one Canvas
-/// from one `snapshot()` per frame; between snapshots the fall is
-/// extrapolated from elapsed time (`MeterDisplayBallistics`), so bars move
-/// smoothly at the display rate when audio arrives once per video frame.
-/// Readouts refresh at 10 Hz and format a string only when a digit moves.
-/// VoiceOver sees one element whose value (refreshed once a second) reads,
+/// The bars are Core Animation layers that the display link moves, one
+/// `snapshot()` per frame; between snapshots the fall is extrapolated from
+/// elapsed time (`MeterDisplayBallistics`), so bars move smoothly at the
+/// display rate when audio arrives once per video frame. A frame touches only
+/// the layers that moved and never re-evaluates a SwiftUI view, so a meter
+/// costs the window nothing per frame. Readouts are checked at 10 Hz and
+/// change (re-evaluating only their own text) when a digit moves.
+/// VoiceOver sees one element whose value (checked once a second) reads,
 /// for example, "left max −6.2 dBTP, right −7.0, over", with a Reset Peaks
 /// action; the compact style shows the same text as its tooltip.
 public struct LevelMeterView: View {
@@ -104,23 +106,11 @@ public struct LevelMeterView: View {
   }
 
   public var body: some View {
-    // VoiceOver and the tooltip read a summary refreshed once a second, not
-    // per frame, and not at all while the meter is paused (no audio, or fixed readings).
-    TimelineView(.animation(minimumInterval: 1, paused: !present || !source.isLive)) { _ in
-      let summary = MeterText.peakSummary(source.read(), channels: labels.count, present: present)
-      LevelMeterBody(
-        source: source, style: style, present: present, labels: labels, scale: scale, spans: spans,
-        reference: reference, palette: palette
-      )
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(name.map { "\($0) audio" } ?? "Audio levels")
-      .accessibilityValue(summary)
-      .accessibilityActions {
-        // Fixed readings have nothing to reset.
-        if let meter = source.meter { Button("Reset Peaks") { meter.resetPeaks() } }
-      }
-      .modifier(LevelMeterTooltip(text: style == .compact ? (name.map { "\($0): " } ?? "") + summary : nil))
-    }
+    LevelMeterBody(
+      source: source, style: style, present: present, labels: labels, scale: scale, spans: spans,
+      reference: reference, palette: palette, accessibilityName: name.map { "\($0) audio" } ?? "Audio levels",
+      tooltipName: name
+    )
   }
 
   // MARK: Layout
@@ -362,6 +352,34 @@ struct LevelMeterSource {
   let maxima: [ReadoutText] = (0..<16).map { _ in ReadoutText { MeterText.level($0) } }
 }
 
+/// What a live meter's readouts show, written by its display ticks (at most
+/// 10 Hz, the summary once a second) and only when a printed value changes,
+/// so the texts that read it re-evaluate when a digit moves and at no other time.
+@MainActor @Observable final class LevelMeterReadouts {
+  /// Per channel: the held true-peak maximum, and whether it is at or above −1 dBTP.
+  private(set) var maxima: [String] = Array(repeating: MeterText.level(-.infinity), count: 16)
+  private(set) var hot: [Bool] = Array(repeating: false, count: 16)
+  private(set) var isOver = false
+  let summary = MeterSummaryStore()
+  @ObservationIgnored private let texts = LevelMeterTexts()
+  @ObservationIgnored private var last = -Double.infinity
+
+  func update(_ s: AudioMeterSnapshot, channels n: Int, at time: Double) {
+    guard time - last >= 0.1 || time < last else { return }
+    last = time
+    var c = 0
+    while c < min(n, 16) {
+      let value = c < s.channelCount ? Double(s.channels[c].truePeakMax) : -.infinity
+      let text = texts.maxima[c](value)
+      if text != maxima[c] { maxima[c] = text }
+      if (value >= -1) != hot[c] { hot[c] = value >= -1 }
+      c += 1
+    }
+    let over = s.isOver()
+    if over != isOver { isOver = over }
+  }
+}
+
 /// The meter's three layouts.
 struct LevelMeterBody: View {
   let source: LevelMeterSource
@@ -374,24 +392,37 @@ struct LevelMeterBody: View {
   let palette: MeterPalette
   /// False inside a host that offers its own menu (`AudioMeterView`: Reset Peaks and Reset Loudness).
   var showsContextMenu = true
+  /// The accessibility element's label; nil inside a host that makes its own element (`AudioMeterView`).
+  var accessibilityName: String? = nil
+  /// Leads the compact style's tooltip ("Camera 1: …").
+  var tooltipName: String? = nil
+  /// Called on each display tick, after the bars (`AudioMeterView` refreshes its summary).
+  var onTick: (@MainActor (Double) -> Void)? = nil
   @State private var animator = LevelMeterAnimator()
-  @State private var texts = LevelMeterTexts()
-  @Environment(\.colorScheme) private var scheme
+  @State private var readouts = LevelMeterReadouts()
 
   private var n: Int { labels.count }
-  private var paused: Bool { !present || !source.isLive }
+  private var live: Bool { present && source.isLive }
 
   var body: some View {
+    // Readings that don't move (no audio, or fixed readings) are read here, once per update.
+    let fixed = live ? nil : source.read()
     Group {
       switch style {
       case .compact: compact
-      case .strip: strip
-      case .full: full
+      case .strip: strip(fixed)
+      case .full: full(fixed)
       }
     }
     .contextMenu {
       if source.isLive && showsContextMenu { Button("Reset Peaks") { resetPeaks() } }
     }
+    .modifier(
+      LevelMeterAccessibility(
+        name: accessibilityName, tooltip: style == .compact ? (tooltipName.map { "\($0): " } ?? "") : nil,
+        summary: readouts.summary,
+        fixed: fixed.map { MeterText.peakSummary($0, channels: n, present: present) },
+        reset: source.isLive ? { resetPeaks() } : nil))
   }
 
   private func resetPeaks() {
@@ -399,36 +430,39 @@ struct LevelMeterBody: View {
     animator.resetHolds()
   }
 
-  /// The animated bars: one TimelineView, one Canvas, one snapshot per frame.
+  /// The bars: layers the display link moves, one snapshot per frame.
   private func bars(_ axis: Axis, gap: CGFloat, holdWidth: CGFloat, overDot: CGFloat = 0) -> some View {
-    // Built here, once per body evaluation, not per frame or per rectangle.
-    let colors = LevelMeterColors(palette, scheme: scheme)
-    return TimelineView(.animation(minimumInterval: nil, paused: paused)) { timeline in
-      let time = timeline.date.timeIntervalSinceReferenceDate
-      Canvas { context, size in
-        let state = animator
-        state.configure(fallRate: source.fallRate, holdTime: source.holdTime)
-        if present {
-          state.advance(source.read(), channels: n, scale: scale, at: time, animate: source.isLive)
+    let source = source, present = present, n = n, scale = scale, spans = spans, reference = reference
+    let animator = animator, readouts = readouts, onTick = onTick
+    return MeterLayerRepresentable(live: live, palette: palette) { frame, layers, colors in
+      animator.configure(fallRate: source.fallRate, holdTime: source.holdTime)
+      let s = source.read()
+      if present {
+        animator.advance(s, channels: n, scale: scale, at: frame.time, animate: source.isLive)
+      } else {
+        animator.showNothing(channels: n)
+      }
+      let size = frame.size
+      let barsSize = CGSize(width: size.width - (overDot > 0 ? overDot + 3 : 0), height: size.height)
+      LevelMeterView.layout(
+        animator.layouts, spans: spans, reference: reference, axis: axis, size: barsSize, gap: gap,
+        holdWidth: holdWidth
+      ) { rect, part in
+        layers.fill(rect, colors(part))
+      }
+      if overDot > 0 {
+        let d = min(overDot, size.height)
+        let dot = CGRect(x: size.width - d, y: (size.height - d) / 2, width: d, height: d)
+        if animator.isOver {
+          layers.fill(dot, colors.over, radius: d / 2)
         } else {
-          state.showNothing(channels: n)
+          layers.outline(dot, colors.outline, radius: d / 2)
         }
-        let barsSize = CGSize(width: size.width - (overDot > 0 ? overDot + 3 : 0), height: size.height)
-        LevelMeterView.layout(
-          state.layouts, spans: spans, reference: reference, axis: axis, size: barsSize, gap: gap,
-          holdWidth: holdWidth
-        ) { rect, part in
-          context.fill(Path(rect), with: .color(colors(part)))
-        }
-        if overDot > 0 {
-          let d = min(overDot, size.height)
-          let dot = CGRect(x: size.width - d, y: (size.height - d) / 2, width: d, height: d)
-          if state.isOver {
-            context.fill(Path(ellipseIn: dot), with: .color(palette.over))
-          } else {
-            context.stroke(Path(ellipseIn: dot.insetBy(dx: 0.5, dy: 0.5)), with: .color(colors.outline), lineWidth: 1)
-          }
-        }
+      }
+      if frame.isTick {
+        readouts.update(s, channels: n, at: frame.time)
+        readouts.summary.update(at: frame.time) { MeterText.peakSummary(s, channels: n, present: present) }
+        onTick?(frame.time)
       }
     }
   }
@@ -446,7 +480,7 @@ struct LevelMeterBody: View {
 
   // MARK: Strip
 
-  private var strip: some View {
+  private func strip(_ fixed: AudioMeterSnapshot?) -> some View {
     let r = LevelMeterView.rows(.strip, channels: n)
     let height = LevelMeterView.rowsHeight(.strip, channels: n)
     return VStack(alignment: .leading, spacing: 3) {
@@ -469,58 +503,57 @@ struct LevelMeterBody: View {
         }
       }
       .opacity(present ? 1 : 0.4)
-      // 10 Hz while live; paused with the bars (no audio, or fixed readings).
-      TimelineView(.animation(minimumInterval: 0.1, paused: paused)) { _ in
-        let s = source.read()
-        HStack(alignment: .top, spacing: 8) {
-          if present {
-            // Four channels to a line.
-            VStack(alignment: .leading, spacing: 2) {
-              ForEach(0..<(n + 3) / 4, id: \.self) { line in
-                HStack(spacing: 8) {
-                  ForEach(line * 4..<min(n, line * 4 + 4), id: \.self) { c in
-                    // The number stays whole; a long label truncates to fit the strip.
-                    HStack(spacing: 3) {
-                      Text(labels[c]).foregroundStyle(.secondary).truncationMode(.tail)
-                      maximum(s, c).fixedSize()
-                    }
+      HStack(alignment: .top, spacing: 8) {
+        if present {
+          // Four channels to a line.
+          VStack(alignment: .leading, spacing: 2) {
+            ForEach(0..<(n + 3) / 4, id: \.self) { line in
+              HStack(spacing: 8) {
+                ForEach(line * 4..<min(n, line * 4 + 4), id: \.self) { c in
+                  // The number stays whole; a long label truncates to fit the strip.
+                  HStack(spacing: 3) {
+                    Text(labels[c]).foregroundStyle(.secondary).truncationMode(.tail)
+                    maximum(fixed, c).fixedSize()
                   }
-                  if line == (n - 1) / 4 { Text("dBTP").foregroundStyle(.secondary).fixedSize() }
                 }
+                if line == (n - 1) / 4 { Text("dBTP").foregroundStyle(.secondary).fixedSize() }
               }
             }
-          } else {
-            Text("No audio").foregroundStyle(.secondary)
           }
-          Spacer(minLength: 4)
-          OverLatch(lit: present && s.isOver(), palette: palette, action: source.isLive ? { resetPeaks() } : nil)
-            .fixedSize()
+        } else {
+          Text("No audio").foregroundStyle(.secondary)
         }
-        .font(.system(size: 10).monospacedDigit())
-        .lineLimit(1)
+        Spacer(minLength: 4)
+        latch(fixed).fixedSize()
       }
+      .font(.system(size: 10).monospacedDigit())
+      .lineLimit(1)
     }
   }
 
   /// A channel's held maximum, red at or above −1 dBTP.
-  private func maximum(_ s: AudioMeterSnapshot, _ c: Int) -> some View {
-    let value = c < s.channelCount ? Double(s.channels[c].truePeakMax) : -.infinity
-    return Text(texts.maxima[c](value))
-      .foregroundStyle(value >= -1 ? AnyShapeStyle(palette.readoutOver(scheme)) : AnyShapeStyle(.primary))
+  private func maximum(_ fixed: AudioMeterSnapshot?, _ c: Int) -> some View {
+    LevelMeterMaximum(
+      readouts: readouts, channel: c,
+      fixed: fixed.map { c < $0.channelCount ? Double($0.channels[c].truePeakMax) : -.infinity }, palette: palette)
+  }
+
+  private func latch(_ fixed: AudioMeterSnapshot?) -> some View {
+    LevelMeterLatch(
+      readouts: readouts, fixed: fixed.map { present && $0.isOver() }, palette: palette,
+      action: source.isLive ? { resetPeaks() } : nil)
   }
 
   // MARK: Full
 
-  private var full: some View {
+  private func full(_ fixed: AudioMeterSnapshot?) -> some View {
     let gap = LevelMeterView.rows(.full, channels: n).gap
     let ruler: CGFloat = 26
     return VStack(alignment: .leading, spacing: 4) {
-      TimelineView(.animation(minimumInterval: 0.1, paused: paused)) { _ in
-        HStack {
-          Text("dBTP").font(.system(size: 9)).foregroundStyle(.secondary)
-          Spacer(minLength: 4)
-          OverLatch(lit: present && source.read().isOver(), palette: palette, action: source.isLive ? { resetPeaks() } : nil)
-        }
+      HStack {
+        Text("dBTP").font(.system(size: 9)).foregroundStyle(.secondary)
+        Spacer(minLength: 4)
+        latch(fixed)
       }
       HStack(alignment: .top, spacing: 3) {
         LevelMeterRuler(ticks: scale.ticks, axis: .vertical, inset: 5).frame(width: ruler)
@@ -545,17 +578,71 @@ struct LevelMeterBody: View {
       }
       HStack(spacing: 3) {
         Color.clear.frame(width: ruler, height: 1)
-        TimelineView(.animation(minimumInterval: 0.1, paused: paused)) { _ in
-          let s = source.read()
-          HStack(spacing: gap) {
-            ForEach(0..<n, id: \.self) { c in
-              Group { if present { maximum(s, c) } else { Text("—").foregroundStyle(.secondary) } }
-                .font(.system(size: 9).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.5)
-                .frame(maxWidth: .infinity)
-            }
+        HStack(spacing: gap) {
+          ForEach(0..<n, id: \.self) { c in
+            Group { if present { maximum(fixed, c) } else { Text("—").foregroundStyle(.secondary) } }
+              .font(.system(size: 9).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.5)
+              .frame(maxWidth: .infinity)
           }
         }
       }
+    }
+  }
+}
+
+/// A channel's held maximum: from the live readouts, or the fixed reading.
+/// Its own view, so a new digit re-evaluates this text and nothing around it.
+struct LevelMeterMaximum: View {
+  let readouts: LevelMeterReadouts
+  let channel: Int
+  let fixed: Double?
+  let palette: MeterPalette
+  @Environment(\.colorScheme) private var scheme
+
+  var body: some View {
+    let text = fixed.map { MeterText.level($0) } ?? readouts.maxima[channel]
+    let hot = fixed.map { $0 >= -1 } ?? readouts.hot[channel]
+    Text(text).foregroundStyle(hot ? AnyShapeStyle(palette.readoutOver(scheme)) : AnyShapeStyle(.primary))
+  }
+}
+
+/// The over latch on the live readouts, or lit from the fixed reading.
+struct LevelMeterLatch: View {
+  let readouts: LevelMeterReadouts
+  let fixed: Bool?
+  let palette: MeterPalette
+  let action: (() -> Void)?
+
+  var body: some View {
+    OverLatch(lit: fixed ?? readouts.isOver, palette: palette, action: action)
+  }
+}
+
+/// The meter's one accessibility element (and the compact style's tooltip),
+/// reading the summary its ticks refresh: a new summary re-evaluates this
+/// modifier, not the meter.
+struct LevelMeterAccessibility: ViewModifier {
+  let name: String?
+  let tooltip: String?
+  let summary: MeterSummaryStore
+  /// The summary of readings that don't move; nil for a live meter.
+  let fixed: String?
+  let reset: (() -> Void)?
+
+  func body(content: Content) -> some View {
+    let text = fixed ?? summary.text
+    if let name {
+      content
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name)
+        .accessibilityValue(text)
+        .accessibilityActions {
+          // Fixed readings have nothing to reset.
+          if let reset { Button("Reset Peaks") { reset() } }
+        }
+        .modifier(LevelMeterTooltip(text: tooltip.map { $0 + text }))
+    } else {
+      content
     }
   }
 }

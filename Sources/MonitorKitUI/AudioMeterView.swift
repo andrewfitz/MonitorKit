@@ -223,10 +223,11 @@ public struct MeterPalette: Sendable {
 /// the −23 LUFS target line; M, S, I, LRA, Max TP and PLR readouts); and a
 /// phase-correlation meter for a stereo pair when the meter runs `.correlation`.
 ///
-/// Bars draw at display rate from the meter's lock-free `snapshot()`, one
-/// snapshot per frame with the fall extrapolated between snapshots (see
-/// `LevelMeterView`); readouts refresh at 10 Hz (EBU Tech 3341's minimum)
-/// and format a string only when a digit changes. Click the over latch to
+/// Bars are Core Animation layers the display link moves from the meter's
+/// lock-free `snapshot()`, one snapshot per frame with the fall extrapolated
+/// between snapshots (see `LevelMeterView`), without re-evaluating a SwiftUI
+/// view; readouts are checked at 10 Hz (EBU Tech 3341's minimum) and change
+/// only when a digit does. Click the over latch to
 /// reset the peaks; the context menu resets peaks or loudness.
 public struct AudioMeterView: View {
   let meter: AudioMeter
@@ -239,6 +240,7 @@ public struct AudioMeterView: View {
   let palette: MeterPalette
   let present: Bool
   let name: String?
+  @State private var spoken = MeterSummaryStore()
 
   /// `scale` defaults to `MeterScale.expandedPeak()` for the peak kinds and
   /// `kind.defaultScale(for:)` for the others; `loudness` nil hides the R 128
@@ -290,10 +292,12 @@ public struct AudioMeterView: View {
   }
 
   public var body: some View {
+    let spoken = spoken
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .top, spacing: 14) {
         PeakColumns(
-          meter: meter, kind: kind, scale: scale, labels: channelLabels, palette: palette, present: present)
+          meter: meter, kind: kind, scale: scale, labels: channelLabels, palette: palette, present: present,
+          onTick: { time in spoken.update(at: time) { summary(meter.snapshot()) } })
         if let loudnessScale {
           LoudnessPanel(
             meter: meter, scale: loudnessScale, unit: loudnessUnit, target: target, palette: palette, present: present)
@@ -305,16 +309,10 @@ public struct AudioMeterView: View {
     }
     .accessibilityHidden(true)
     .overlay {
-      // VoiceOver reads a summary refreshed once a second, not per frame.
-      TimelineView(.periodic(from: .now, by: 1)) { _ in
-        Color.clear
-          .allowsHitTesting(false)
-          .accessibilityElement()
-          .accessibilityLabel(name.map { "\($0) audio meters" } ?? "Audio meters")
-          .accessibilityValue(summary(meter.snapshot()))
-          .accessibilityAction(named: "Reset Peaks") { meter.resetPeaks() }
-          .accessibilityAction(named: "Reset Loudness") { meter.resetLoudness() }
-      }
+      // VoiceOver reads a summary the bars' ticks refresh once a second, not per frame.
+      AudioMeterAccessibility(
+        name: name.map { "\($0) audio meters" } ?? "Audio meters", summary: spoken,
+        fixed: present ? nil : summary(meter.snapshot()), meter: meter)
     }
     .contextMenu {
       Button("Reset Peaks") { meter.resetPeaks() }
@@ -363,6 +361,26 @@ public struct AudioMeterView: View {
   }
 }
 
+/// The panel's one accessibility element, reading the summary the bars' ticks
+/// refresh: a new summary re-evaluates this leaf, not the panel.
+struct AudioMeterAccessibility: View {
+  let name: String
+  let summary: MeterSummaryStore
+  /// The summary while nothing moves (no audio); nil while live.
+  let fixed: String?
+  let meter: AudioMeter
+
+  var body: some View {
+    Color.clear
+      .allowsHitTesting(false)
+      .accessibilityElement()
+      .accessibilityLabel(name)
+      .accessibilityValue(fixed ?? summary.text)
+      .accessibilityAction(named: "Reset Peaks") { meter.resetPeaks() }
+      .accessibilityAction(named: "Reset Loudness") { meter.resetLoudness() }
+  }
+}
+
 /// The panel's peak bars: `LevelMeterView`'s full style for any bar kind.
 struct PeakColumns: View {
   let meter: AudioMeter
@@ -371,18 +389,20 @@ struct PeakColumns: View {
   let labels: [String]
   let palette: MeterPalette
   let present: Bool
+  var onTick: (@MainActor (Double) -> Void)? = nil
 
   var body: some View {
     if kind == .truePeak {
       LevelMeterBody(
         source: LevelMeterSource(meter: meter, fixed: AudioMeterSnapshot()), style: .full, present: present,
         labels: labels, scale: scale, spans: scale.zoneSpans, reference: scale.alignment.map { scale.position(of: $0) },
-        palette: palette, showsContextMenu: false
+        palette: palette, showsContextMenu: false, onTick: onTick
       )
       .frame(minWidth: Self.width(labels.count, column: 12), idealWidth: Self.width(labels.count, column: 22),
         maxWidth: Self.width(labels.count, column: 30))
     } else {
-      KindColumns(meter: meter, kind: kind, scale: scale, labels: labels, palette: palette, present: present)
+      KindColumns(
+        meter: meter, kind: kind, scale: scale, labels: labels, palette: palette, present: present, onTick: onTick)
         .frame(minWidth: Self.width(labels.count, column: 12), idealWidth: Self.width(labels.count, column: 22),
           maxWidth: Self.width(labels.count, column: 30))
     }
@@ -405,31 +425,29 @@ struct KindColumns: View {
   let labels: [String]
   let palette: MeterPalette
   let present: Bool
+  var onTick: (@MainActor (Double) -> Void)? = nil
   @State private var animator = LevelMeterAnimator()
-  @Environment(\.colorScheme) private var scheme
 
   var body: some View {
     let spans = scale.zoneSpans
     let reference = scale.alignment.map { scale.position(of: $0) }
-    let colors = LevelMeterColors(palette, scheme: scheme)
     let gap = LevelMeterView.rows(.full, channels: labels.count).gap
+    let meter = meter, kind = kind, scale = scale, n = labels.count, present = present
+    let animator = animator, onTick = onTick
     VStack(alignment: .leading, spacing: 4) {
       HStack(alignment: .top, spacing: 3) {
         LevelMeterRuler(ticks: scale.ticks, axis: .vertical, inset: 5).frame(width: 26)
-        TimelineView(.animation(minimumInterval: nil, paused: !present)) { timeline in
-          let time = timeline.date.timeIntervalSinceReferenceDate
-          Canvas { context, size in
-            animator.configure(fallRate: meter.configuration.peakDecayRate, holdTime: meter.configuration.peakHoldTime)
-            if present {
-              animator.advance(meter.snapshot(), channels: labels.count, kind: kind, scale: scale, at: time, animate: true)
-            } else {
-              animator.showNothing(channels: labels.count)
-            }
-            LevelMeterView.layout(
-              animator.layouts, spans: spans, reference: reference, axis: .vertical,
-              size: size, gap: gap
-            ) { rect, part in context.fill(Path(rect), with: .color(colors(part))) }
+        MeterLayerRepresentable(live: present, palette: palette) { frame, layers, colors in
+          animator.configure(fallRate: meter.configuration.peakDecayRate, holdTime: meter.configuration.peakHoldTime)
+          if present {
+            animator.advance(meter.snapshot(), channels: n, kind: kind, scale: scale, at: frame.time, animate: true)
+          } else {
+            animator.showNothing(channels: n)
           }
+          LevelMeterView.layout(
+            animator.layouts, spans: spans, reference: reference, axis: .vertical, size: frame.size, gap: gap
+          ) { rect, part in layers.fill(rect, colors(part)) }
+          if frame.isTick { onTick?(frame.time) }
         }
         .padding(.vertical, 5)
         .opacity(present ? 1 : 0.4)
@@ -456,27 +474,25 @@ struct LoudnessPanel: View {
   let target: Double
   let palette: MeterPalette
   let present: Bool
-  @State private var texts = LoudnessTexts()
-  @Environment(\.colorScheme) private var scheme
+  @State private var readouts = LoudnessReadouts()
 
   var body: some View {
     let spans = scale.zoneSpans
     let reference = scale.alignment.map { scale.position(of: $0) }
-    let colors = LevelMeterColors(palette, scheme: scheme)
+    let meter = meter, scale = scale, unit = unit, target = target, readouts = readouts
     HStack(alignment: .top, spacing: 8) {
       VStack(alignment: .leading, spacing: 4) {
         Text(unit == .lu ? "LU" : "LUFS").font(.system(size: 9)).foregroundStyle(.secondary)
         HStack(alignment: .top, spacing: 3) {
           LevelMeterRuler(ticks: scale.ticks, axis: .vertical, inset: 5).frame(width: 26)
-          TimelineView(.animation(minimumInterval: nil, paused: !present)) { _ in
-            Canvas { context, size in
-              let s = meter.snapshot()
-              let m = scale.layout(level: scale.value(forReading: Double(s.loudness.momentary)))
-              let st = scale.layout(level: scale.value(forReading: Double(s.loudness.shortTerm)))
-              LevelMeterView.layoutChannels(.pair(m, st), spans: spans, reference: reference, axis: .vertical, size: size, gap: 3) {
-                rect, part in context.fill(Path(rect), with: .color(colors(part)))
-              }
-            }
+          MeterLayerRepresentable(live: present, palette: palette) { frame, layers, colors in
+            let s = meter.snapshot()
+            let m = scale.layout(level: scale.value(forReading: Double(s.loudness.momentary)))
+            let st = scale.layout(level: scale.value(forReading: Double(s.loudness.shortTerm)))
+            LevelMeterView.layoutChannels(
+              .pair(m, st), spans: spans, reference: reference, axis: .vertical, size: frame.size, gap: 3
+            ) { rect, part in layers.fill(rect, colors(part)) }
+            if frame.isTick { readouts.update(s, unit: unit, target: target, at: frame.time) }
           }
           .frame(width: 24)
           .padding(.vertical, 5)
@@ -493,22 +509,61 @@ struct LoudnessPanel: View {
           .frame(width: 24)
         }
       }
-      TimelineView(.animation(minimumInterval: 0.1, paused: !present)) { _ in
-        let r = LoudnessReadout(meter.snapshot())
-        let t = texts.strings(r, unit: unit, target: target)
-        Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 3) {
-          row("M", present ? t.momentary : "—")
-          row("S", present ? t.shortTerm : "—")
-          row("I", present ? t.integrated : "—")
-          row("LRA", present ? t.range : "—")
-          row("Max TP", present ? t.peak : "—", over: present && r.maximumTruePeak >= -1)
-          row("PLR", present ? t.ratio : "—")
-        }
-        .font(.caption.monospacedDigit())
-        .help("EBU R 128: integrated loudness target −23 LUFS, maximum true peak −1 dBTP. PLR is Max TP − I.")
-      }
-      .fixedSize()
+      LoudnessGrid(readouts: readouts, present: present, palette: palette)
+        .fixedSize()
     }
+  }
+}
+
+/// The loudness readouts the bars' ticks write, at most 10 Hz and only when a
+/// printed value changes.
+@MainActor @Observable final class LoudnessReadouts {
+  /// M, S, I, LRA, Max TP and PLR, as printed.
+  private(set) var strings: [String] = Array(repeating: "—", count: 6)
+  /// Whether Max TP is at or above −1 dBTP.
+  private(set) var peakOver = false
+  @ObservationIgnored private let texts = LoudnessTexts()
+  @ObservationIgnored private var last = -Double.infinity
+
+  func update(_ s: AudioMeterSnapshot, unit: MeterScaleUnit, target: Double, at time: Double) {
+    guard time - last >= 0.1 || time < last else { return }
+    last = time
+    let r = LoudnessReadout(s)
+    let t = texts.strings(r, unit: unit, target: target)
+    set(0, t.momentary)
+    set(1, t.shortTerm)
+    set(2, t.integrated)
+    set(3, t.range)
+    set(4, t.peak)
+    set(5, t.ratio)
+    let over = r.maximumTruePeak >= -1
+    if over != peakOver { peakOver = over }
+  }
+
+  private func set(_ i: Int, _ text: String) {
+    if strings[i] != text { strings[i] = text }
+  }
+}
+
+/// M, S, I, LRA, Max TP and PLR.
+struct LoudnessGrid: View {
+  let readouts: LoudnessReadouts
+  let present: Bool
+  let palette: MeterPalette
+  @Environment(\.colorScheme) private var scheme
+
+  var body: some View {
+    let t = readouts.strings
+    Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 3) {
+      row("M", present ? t[0] : "—")
+      row("S", present ? t[1] : "—")
+      row("I", present ? t[2] : "—")
+      row("LRA", present ? t[3] : "—")
+      row("Max TP", present ? t[4] : "—", over: present && readouts.peakOver)
+      row("PLR", present ? t[5] : "—")
+    }
+    .font(.caption.monospacedDigit())
+    .help("EBU R 128: integrated loudness target −23 LUFS, maximum true peak −1 dBTP. PLR is Max TP − I.")
   }
 
   private func row(_ name: String, _ value: String, over: Bool = false) -> some View {
@@ -556,8 +611,7 @@ struct CorrelationMeter: View {
   let meter: AudioMeter
   let palette: MeterPalette
   let present: Bool
-  @State private var text = ReadoutText { MeterText.correlation($0 / 10) }
-  @Environment(\.colorScheme) private var scheme
+  @State private var readout = CorrelationReadout()
 
   /// Where `value` (−1…1) sits on the track (0…1), and the zone it reads in.
   nonisolated static func layout(_ value: Double) -> (position: Double, zone: MeterZoneKind)? {
@@ -567,24 +621,24 @@ struct CorrelationMeter: View {
   }
 
   var body: some View {
+    let meter = meter, readout = readout
     HStack(spacing: 6) {
       Text("Phase").font(.system(size: 9)).foregroundStyle(.secondary)
       VStack(spacing: 1) {
-        TimelineView(.animation(minimumInterval: nil, paused: !present)) { _ in
-          Canvas { context, size in
-            let bar = CGRect(x: 0, y: 0, width: size.width, height: 6)
-            context.fill(Path(bar), with: .color(palette.track(for: scheme)))
-            let mid = size.width / 2
-            if let r = Self.layout(Double(meter.snapshot().correlation)) {
-              let x = CGFloat(r.position) * size.width
-              context.fill(
-                Path(CGRect(x: min(x, mid), y: 0, width: max(2, abs(x - mid)), height: 6)),
-                with: .color(palette.color(r.zone)))
-            }
-            context.fill(Path(CGRect(x: mid - 0.5, y: 0, width: 1, height: 6)), with: .color(palette.reference))
+        MeterLayerRepresentable(live: present, palette: palette) { frame, layers, colors in
+          let size = frame.size
+          let correlation = Double(meter.snapshot().correlation)
+          layers.fill(CGRect(x: 0, y: 0, width: size.width, height: size.height), colors.well)
+          let mid = size.width / 2
+          if let r = Self.layout(correlation) {
+            let x = CGFloat(r.position) * size.width
+            layers.fill(
+              CGRect(x: min(x, mid), y: 0, width: max(2, abs(x - mid)), height: size.height), colors.lit(r.zone))
           }
-          .frame(height: 6)
+          layers.fill(CGRect(x: mid - 0.5, y: 0, width: 1, height: size.height), colors.reference)
+          if frame.isTick { readout.update(correlation, at: frame.time) }
         }
+        .frame(height: 6)
         HStack {
           Text(MeterText.minus + "1")
           Spacer()
@@ -595,12 +649,33 @@ struct CorrelationMeter: View {
         .font(.system(size: 8).monospacedDigit()).foregroundStyle(.secondary)
       }
       .opacity(present ? 1 : 0.4)
-      TimelineView(.animation(minimumInterval: 0.1, paused: !present)) { _ in
-        // ReadoutText keys on tenths: scale by 10 so it moves on hundredths.
-        Text(present ? text(Double(meter.snapshot().correlation) * 10) : "—")
-          .font(.caption.monospacedDigit()).frame(width: 40, alignment: .trailing)
-      }
+      CorrelationText(readout: readout, present: present)
     }
     .help("Phase correlation of the stereo pair: +1 mono, 0 unrelated, −1 out of phase.")
+  }
+}
+
+/// The correlation's printed value, written by the bar's ticks at most 10 Hz
+/// and only when it changes.
+@MainActor @Observable final class CorrelationReadout {
+  private(set) var text = "—"
+  // ReadoutText keys on tenths: scale by 10 so it moves on hundredths.
+  @ObservationIgnored private let format = ReadoutText { MeterText.correlation($0 / 10) }
+  @ObservationIgnored private var last = -Double.infinity
+
+  func update(_ correlation: Double, at time: Double) {
+    guard time - last >= 0.1 || time < last else { return }
+    last = time
+    let t = format(correlation * 10)
+    if t != text { text = t }
+  }
+}
+
+struct CorrelationText: View {
+  let readout: CorrelationReadout
+  let present: Bool
+
+  var body: some View {
+    Text(present ? readout.text : "—").font(.caption.monospacedDigit()).frame(width: 40, alignment: .trailing)
   }
 }

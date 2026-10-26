@@ -2,6 +2,18 @@
 
 All notable changes to MonitorKit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, a minor version may change the public API; every such change is listed under **Changed** or **Removed**.
 
+## [0.1.6] - 2026-10-26
+
+### Changed
+
+- `LevelMeterView` and `AudioMeterView` draw their bars (true peak and the other bar kinds, loudness and correlation) as Core Animation layers moved by the meter's own display link, instead of a `TimelineView(.animation)` and a `Canvas`. Each of those frames was a SwiftUI update of the host's whole window; now a frame touches only the layers that moved and never re-evaluates a SwiftUI view, and one that looks like the last commits nothing. In Ultracam's main window two live meters had kept the main thread about 60% busy. The public API is unchanged.
+- The display link runs only while a meter is live and on screen, not in a hidden or occluded window. Fixed readings and "No audio" draw once per view update.
+- Readouts (channel maxima, the over latch, the R 128 grid, correlation) change only when a printed value does, checked at most 10 times a second, and each re-evaluates only its own text. VoiceOver summaries and the compact meter's tooltip refresh at most once a second the same way.
+
+### Added
+
+- `MeterDiagnostics.displayTicks`, the number of display frames every meter in the process has drawn, for a host's diagnostics and performance checks.
+
 ## [0.1.5] - 2026-10-25
 
 ### Fixed
@@ -123,6 +135,7 @@ UI (`MonitorKitUI`):
 
 Documentation: README, FEATURES, API, INTEGRATION, ARCHITECTURE and MATH (every constant with its source and the test that checks it).
 
+[0.1.6]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.6
 [0.1.5]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.5
 [0.1.4]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.4
 [0.1.3]: https://github.com/andrewfitz/MonitorKit/releases/tag/0.1.3

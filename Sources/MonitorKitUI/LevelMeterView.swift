@@ -422,6 +422,7 @@ struct LevelMeterBody: View {
         name: accessibilityName, tooltip: style == .compact ? (tooltipName.map { "\($0): " } ?? "") : nil,
         summary: readouts.summary,
         fixed: fixed.map { MeterText.peakSummary($0, channels: n, present: present) },
+        current: { MeterText.peakSummary(source.read(), channels: n, present: present) },
         reset: source.isLive ? { resetPeaks() } : nil))
   }
 
@@ -627,10 +628,13 @@ struct LevelMeterAccessibility: ViewModifier {
   let summary: MeterSummaryStore
   /// The summary of readings that don't move; nil for a live meter.
   let fixed: String?
+  /// The live meter's summary now: until its first display tick has written one (and in a
+  /// render that never ticks, such as a snapshot).
+  let current: () -> String
   let reset: (() -> Void)?
 
   func body(content: Content) -> some View {
-    let text = fixed ?? summary.text
+    let text = fixed ?? (summary.text.isEmpty ? current() : summary.text)
     if let name {
       content
         .accessibilityElement(children: .ignore)

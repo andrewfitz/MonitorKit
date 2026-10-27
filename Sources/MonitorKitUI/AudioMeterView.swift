@@ -312,7 +312,7 @@ public struct AudioMeterView: View {
       // VoiceOver reads a summary the bars' ticks refresh once a second, not per frame.
       AudioMeterAccessibility(
         name: name.map { "\($0) audio meters" } ?? "Audio meters", summary: spoken,
-        fixed: present ? nil : summary(meter.snapshot()), meter: meter)
+        fixed: present ? nil : summary(meter.snapshot()), current: { summary(meter.snapshot()) }, meter: meter)
     }
     .contextMenu {
       Button("Reset Peaks") { meter.resetPeaks() }
@@ -368,6 +368,8 @@ struct AudioMeterAccessibility: View {
   let summary: MeterSummaryStore
   /// The summary while nothing moves (no audio); nil while live.
   let fixed: String?
+  /// The summary now: until the first display tick has written one (and in a render that never ticks).
+  let current: () -> String
   let meter: AudioMeter
 
   var body: some View {
@@ -375,7 +377,7 @@ struct AudioMeterAccessibility: View {
       .allowsHitTesting(false)
       .accessibilityElement()
       .accessibilityLabel(name)
-      .accessibilityValue(fixed ?? summary.text)
+      .accessibilityValue(fixed ?? (summary.text.isEmpty ? current() : summary.text))
       .accessibilityAction(named: "Reset Peaks") { meter.resetPeaks() }
       .accessibilityAction(named: "Reset Loudness") { meter.resetLoudness() }
   }

@@ -344,7 +344,8 @@ extension ScopeSettings {
   /// per pixel column, and vectorscope bins per side of its square plot
   /// (min(width, height)). Each axis gets at least as many bins as pixels (rounded up
   /// to even), so `ScopeRenderer` reduces the trace exactly, never magnifies it.
-  /// Clamped to the documented ranges; past them the renderer reduces by maximum.
+  /// Clamped to the documented ranges: a plot wider or taller than the largest bin count
+  /// (a waveform over 2048 pixels tall, say) is drawn magnified on that axis.
   /// Every other setting is unchanged. Changing the bins reallocates them, so pass
   /// a viewport that has settled (not every frame of a live resize).
   public func atNativeResolution(viewportWidth: Int, viewportHeight: Int) -> ScopeSettings {

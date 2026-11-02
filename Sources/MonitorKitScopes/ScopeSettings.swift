@@ -337,6 +337,34 @@ public struct ScopeSettings: Codable, Equatable, Sendable {
 }
 
 extension ScopeSettings {
+  /// These settings with bins at the native resolution of a scope drawn into a
+  /// `viewportWidth` × `viewportHeight` pixel viewport, so the trace is accurate at
+  /// any size instead of a fixed bin grid stretched to it: one waveform column per
+  /// plot pixel (per parade panel pixel), one level per pixel row, one histogram bin
+  /// per pixel column, and vectorscope bins per side of its square plot
+  /// (min(width, height)). Each axis gets at least as many bins as pixels (rounded up
+  /// to even), so `ScopeRenderer` reduces the trace exactly, never magnifies it.
+  /// Clamped to the documented ranges; past them the renderer reduces by maximum.
+  /// Every other setting is unchanged. Changing the bins reallocates them, so pass
+  /// a viewport that has settled (not every frame of a live resize).
+  public func atNativeResolution(viewportWidth: Int, viewportHeight: Int) -> ScopeSettings {
+    func even(_ x: Int) -> Int { (max(2, x) + 1) & ~1 }
+    let width = max(1, viewportWidth), height = max(1, viewportHeight)
+    var s = self
+    switch kind {
+    case .waveform:
+      s.waveformColumns = waveformMode.isParade ? 3 * even(ScopeRenderer.maximumPanelPixels(width)) : even(width)
+      s.waveformLevels = height
+    case .histogram:
+      s.histogramBins = even(width)
+    case .vectorscope:
+      s.vectorscopeSize = even(min(width, height))
+    }
+    return s.normalized()
+  }
+}
+
+extension ScopeSettings {
   /// The size of a plain waveform image, 768 × 256 pixels: draw
   /// `plainWaveform(…)` into a viewport this size for one bin per pixel.
   /// MonitorKit bins uniformly, bin ⌊f · 256⌋ of the axis fraction

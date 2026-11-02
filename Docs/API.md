@@ -514,7 +514,7 @@ Compiled scope kernels and render pipelines for one device (`Sendable`).
 | `ScopeGroup` | One fused pass for a stage's waveform, histogram and vectorscope (each pixel decoded once); other members accumulate on their own in the same encoder. Same `accumulate` overloads; `isFused(_:)`, `fusedMemberCount`, `prepare(layouts:)`, `prepareMetal4()`, `uniformLength` |
 | `ScopeRenderer` | Draws an accumulator with its graticule into any target. `render(_:display:target:viewport:clear:into:)`, `prepare(_:display:viewport:target:into:)` / `(…submission:)` then `draw(with:)`. `colorPipeline` (set it to `MonitorPass.colorPipeline` on a shared HDR layer) or `setOutputColor(_:signal:displayTransform:monitorStageHasLUT:)`; `isReady`, `graticule`, `graticuleTexture`, `traceTexture`, `prepareMetal4()`, `uniformLength`, `graticuleUniformLength` |
 | `ScopeStatisticsReader`, `ScopeStatistics` | Any-thread reads of `generation`, `pixelCount`, `lumaMinimum` / `lumaMaximum` / `lumaAverage`, `clippedHigh` / `clippedLow` (R, G, B, luma), `histogramPeak` |
-| `ScopeSettings`, `ScopeDisplay` and their enums | [FEATURES §3](FEATURES.md#3-scopes). `ScopeSettings.plainWaveform(mode:stage:)`, `accumulationKey` |
+| `ScopeSettings`, `ScopeDisplay` and their enums | [FEATURES §3](FEATURES.md#3-scopes). `ScopeSettings.plainWaveform(mode:stage:)`, `atNativeResolution(viewportWidth:viewportHeight:)` (bins from the drawn size, so a scope is accurate at any size), `accumulationKey` |
 | `ScopeGraticule`, `ScopeLabel`, `ScopeTick`, `VectorscopeTarget`, `ScopeContext`, `ScopeLevelAxis`, `ScopeLevelRange`, `ScopeTransfer`, `VectorscopeGeometry`, `WaveformScale.ticks(range:levelRange:)` | Graticule geometry and labels, for a UI drawing its own text |
 
 ```swift

@@ -176,10 +176,12 @@ struct VUMovement {
   private let kernels: UnsafeMutablePointer<Float>
   /// A^n for n in 0...capacity, row-major.
   private let powers: UnsafeMutablePointer<Double>
+  private let filter: Biquad
 
   init(_ ballistics: VUBallistics, sampleRate fs: Double, capacity: Int) {
     self.capacity = capacity
     let f = vuFilter(ballistics, sampleRate: fs)
+    filter = f
     let a = (-f.a1, 1.0, -f.a2, 0.0)
     kernels = .allocate(capacity: 2 * capacity)
     powers = .allocate(capacity: 4 * (capacity + 1))
@@ -204,18 +206,27 @@ struct VUMovement {
     powers.deallocate()
   }
 
-  /// Advances the state `s` (2 values) over `count` rectified samples;
-  /// `s[0]` is then the movement's deflection.
-  func advance(_ s: UnsafeMutablePointer<Double>, rectified u: UnsafePointer<Float>, count n: Int) {
-    assert(n <= capacity, "chunk longer than the VU kernels")
-    var d0: Float = 0
-    var d1: Float = 0
-    vDSP_dotpr(u, 1, kernels + capacity - n, 1, &d0, vDSP_Length(n))
-    vDSP_dotpr(u, 1, kernels + 2 * capacity - n, 1, &d1, vDSP_Length(n))
-    let p = powers + 4 * n
-    let (s0, s1) = (s[0], s[1])
-    s[0] = p[0] * s0 + p[1] * s1 + Double(d0)
-    s[1] = p[2] * s0 + p[3] * s1 + Double(d1)
+  /// Advances the transposed direct-form II state and returns the final output.
+  /// The state after a sample belongs to the next sample; it is not itself
+  /// the current movement deflection.
+  func advance(_ s: UnsafeMutablePointer<Double>, rectified u: UnsafePointer<Float>, count n: Int) -> Double {
+    assert(n > 0 && n <= capacity, "invalid VU chunk length")
+    let preceding = n - 1
+    if preceding > 0 {
+      var d0: Float = 0
+      var d1: Float = 0
+      vDSP_dotpr(u, 1, kernels + capacity - preceding, 1, &d0, vDSP_Length(preceding))
+      vDSP_dotpr(u, 1, kernels + 2 * capacity - preceding, 1, &d1, vDSP_Length(preceding))
+      let p = powers + 4 * preceding
+      let (s0, s1) = (s[0], s[1])
+      s[0] = p[0] * s0 + p[1] * s1 + Double(d0)
+      s[1] = p[2] * s0 + p[3] * s1 + Double(d1)
+    }
+    let last = Double(u[n - 1])
+    let output = s[0] + filter.b0 * last
+    s[0] = s[1] + filter.b1 * last - filter.a1 * output
+    s[1] = filter.b2 * last - filter.a2 * output
+    return output
   }
 }
 

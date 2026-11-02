@@ -355,6 +355,31 @@ final class FalseColorTests: XCTestCase {
     }
   }
 
+  func testGapGreyUsesMeasuredStageColorRegardlessOfPictureStage() throws {
+    let gpu = try requireGPU()
+    let frame = try SyntheticFrame.neutral(.v210, width: 6, height: 2) { _, _ in 420 }
+      .frame(gpu, signal: SignalDescription(range: .legal, encoding: Self.sLog3))
+    let feed = gpu.engine.makeFeed()
+    feed.burnInLUT = try Fixtures.constantLUT(gpu, 0.5)
+    var state = MonitorState()
+    state.falseColor.mode = .custom
+    state.falseColor.customUnit = .ire
+    state.falseColor.customBands = [FalseColorBand(lower: 90, upper: 100, color: ColorRGB(r: 1, g: 0, b: 0))]
+    state.displayTransform = DisplayTransformSettings(mode: .logToRec709)
+    for measured in [SignalStage.source, .output] {
+      state.falseColor.stage = measured
+      let reference = MonitorColorPipeline(output: .signalNative, signal: frame.signal,
+        transform: state.displayTransform, monitorStageHasLUT: measured == .output)
+      let value = measured == .source ? (420.0 - 64) / 876 : 0.5
+      let expected = reference.present(ColorRGB(r: value, g: value, b: value))
+      for picture in SignalStage.allCases {
+        state.pictureStage = picture
+        let out = try gpu.render(frame, state: state, feed: feed)
+        XCTAssertEqual(Double(out.rgb(0, 0).x), expected.r, accuracy: 5e-5, "measured \(measured), picture \(picture)")
+      }
+    }
+  }
+
   func testUnavailableModesReportWhyAndStillDrawThePicture() throws {
     let gpu = try requireGPU()
     let cases: [(FalseColorMode, SignalEncoding, MonitorUnavailableReason)] = [

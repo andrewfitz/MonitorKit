@@ -48,6 +48,7 @@ public final class MonitorPass {
   private var statusKey: StatusKey?
   private var colorInputs: ColorInputs?
   private var colorKey = MonitorEngine.ColorKey()
+  private var falseColorColorPipeline = MonitorColorPipeline(output: .signalNative, signal: .rec709)
   private var appliedHeadroom = 1.0
   var parameters = PassParameters()
   private var variant = MonitorEngine.Variant.uber
@@ -546,6 +547,7 @@ public final class MonitorPass {
     parameters = Self.makeParameters(
       s, key: k, layout: layout, guides: guides, matte: guideMatte, falseColor: falseColor,
       frameParameters: frameParameters, color: colorPipeline)
+    falseColorColorPipeline = Self.falseColorPipeline(s, key: k)
     // Before the variant, which fixes a shared source decode in the pipeline.
     parameters.outputReading = PassParameters.outputReading(frames.output, source: frameParameters)
     applyHeadroom(headroom)
@@ -652,8 +654,10 @@ public final class MonitorPass {
   /// The roll-off follows the display's headroom: a uniform, never a rebuild.
   private func applyHeadroom(_ headroom: Double) {
     appliedHeadroom = headroom
-    guard colorPipeline.rollsOff else { return }
-    parameters.toneMap = Self.toneMap(colorPipeline.rolloff(headroom: headroom))
+    if colorPipeline.rollsOff { parameters.toneMap = Self.toneMap(colorPipeline.rolloff(headroom: headroom)) }
+    if falseColorColorPipeline.rollsOff {
+      parameters.falseColorToneMap = Self.toneMap(falseColorColorPipeline.rolloff(headroom: headroom))
+    }
   }
 
   static func rows(_ m: ColorMatrix) -> InlineArray<3, SIMD4<Float>> {
@@ -750,6 +754,29 @@ public final class MonitorPass {
     case .sLog3: return 1
     case .arriLogC3: return 2
     case .arriLogC4: return 3
+    case .redLog3G10: return 9
+    case .blackmagicFilmGen5: return 8
+    case .vLog: return 7
+    case .canonLog3: return 6
+    case .canonLog2: return 5
+    case .canonLog: return 4
+    }
+  }
+
+  /// Decodes the compact shader metadata value. Zero and future values are
+  /// rejected so an unknown curve can never silently fall back to S-Log3.
+  static func logCurve(_ code: UInt32) -> LogCurve? {
+    switch code {
+    case 1: return .sLog3
+    case 2: return .arriLogC3
+    case 3: return .arriLogC4
+    case 9: return .redLog3G10
+    case 8: return .blackmagicFilmGen5
+    case 7: return .vLog
+    case 6: return .canonLog3
+    case 5: return .canonLog2
+    case 4: return .canonLog
+    default: return nil
     }
   }
 
@@ -765,12 +792,32 @@ public final class MonitorPass {
     }
   }
 
+  /// Decodes the compact shader transfer value; zero means no display transfer.
+  static func displayTransfer(_ code: UInt32) -> DisplayTransfer? {
+    switch code {
+    case 0: return .bt709
+    case 1: return .sRGB
+    case 2: return .pq
+    case 3: return .hlg
+    case 4: return .linear
+    default: return nil
+    }
+  }
+
   static func stageCode(_ stage: SignalStage) -> UInt32 {
     switch stage {
     case .source: return 0
     case .output: return 1
     case .monitor: return 2
     }
+  }
+
+  static func falseColorPipeline(_ s: MonitorState, key k: Key) -> MonitorColorPipeline {
+    let measuredHasLUT = s.falseColor.mode.needsLogSource ? false :
+      ((s.falseColor.stage != .source && k.burnInLUT != nil)
+       || (s.falseColor.stage == .monitor && s.monitorLUT && k.monitorLUT != nil))
+    return MonitorColorPipeline(
+      output: k.output, signal: k.signal, transform: s.displayTransform, monitorStageHasLUT: measuredHasLUT)
   }
 
   static func makeParameters(
@@ -901,6 +948,14 @@ public final class MonitorPass {
         i += 1
       }
     }
+    let fallback = falseColorPipeline(s, key: k)
+    p.falseColorPipeline = SIMD4(fallback.transform.rawValue, fallback.picture.transfer.rawValue,
+                                fallback.convertsToTarget ? fallback.target?.transfer.rawValue ?? 0 : 0, 1)
+    p.falseColorFlags = SIMD4(fallback.rollsOff ? 1 : 0, 0, 0, 0)
+    p.falseColorToneMap = toneMap(fallback.transform == .pqToSDR ? fallback.sdrToneMap : fallback.rolloff(headroom: k.output.headroom))
+    p.falseColorWeights = color(fallback.picture.primaries.luminanceCoefficients, 0)
+    p.falseColorToTarget = rows(fallback.pictureToTarget)
+    p.falseColorTransform = rows(fallback.transformMatrix)
     return p
   }
 
@@ -939,7 +994,18 @@ public final class MonitorPass {
     var values: String?
     switch codeValues {
     case .log(let log)?:
-      let curve = log.curve == .sLog3 ? "S-Log3" : (log.curve == .arriLogC3 ? "LogC3" : "LogC4")
+      let curve: String
+      switch log.curve {
+      case .sLog3: curve = "S-Log3"
+      case .arriLogC3: curve = "LogC3"
+      case .arriLogC4: curve = "LogC4"
+      case .canonLog: curve = "Canon Log"
+      case .canonLog2: curve = "Canon Log 2"
+      case .canonLog3: curve = "Canon Log 3"
+      case .vLog: curve = "V-Log"
+      case .blackmagicFilmGen5: curve = "Blackmagic Film Gen 5"
+      case .redLog3G10: curve = "Log3G10"
+      }
       values = "\(curve) code values"
     case .unknown?: values = "Unlabelled code values"
     case .display?, nil: values = nil

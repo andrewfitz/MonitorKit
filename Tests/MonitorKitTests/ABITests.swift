@@ -67,11 +67,14 @@ final class ABITests: XCTestCase {
       ("clipColors", o(\.clipColors)), ("whiteGain", o(\.whiteGain)), ("whiteSignalGain", o(\.whiteSignalGain)),
       ("reciprocals", o(\.reciprocals)), ("outputReading", o(\.outputReading)), ("hlgToSDR", o(\.hlgToSDR)),
       ("sourceWeights", o(\.sourceWeights)),
+      ("falseColorPipeline", o(\.falseColorPipeline)), ("falseColorFlags", o(\.falseColorFlags)),
+      ("falseColorToneMap", o(\.falseColorToneMap)), ("falseColorWeights", o(\.falseColorWeights)),
+      ("falseColorToTarget", o(\.falseColorToTarget)), ("falseColorTransform", o(\.falseColorTransform)),
     ])
     let members = try XCTUnwrap(try fragmentBuffers()[3]?.bufferStructType?.members)
     let arrays = [
       ("bandEdges", PassParameters.maximumBands), ("bandColors", PassParameters.maximumBands), ("toTarget", 3),
-      ("transformMatrix", 3), ("zebraColors", 2), ("navigatorColors", 2), ("clipColors", 16),
+      ("transformMatrix", 3), ("falseColorToTarget", 3), ("falseColorTransform", 3), ("zebraColors", 2), ("navigatorColors", 2), ("clipColors", 16),
     ]
     for (name, length) in arrays {
       let array = try XCTUnwrap(members.first { $0.name == name }?.arrayType(), name)

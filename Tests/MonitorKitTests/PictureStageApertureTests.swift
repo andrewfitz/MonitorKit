@@ -12,6 +12,17 @@ import simd
 /// status reasons for every refusal a hand-written monitor made (the code-value
 /// view) and the fusable LUT source's include guard.
 final class PictureStageApertureTests: XCTestCase {
+  func testEveryLogCurveHasItsOwnCodeValueLabel() {
+    let labels: [(LogCurve, String)] = [(.sLog3, "S-Log3"), (.arriLogC3, "LogC3"), (.arriLogC4, "LogC4"),
+      (.canonLog, "Canon Log"), (.canonLog2, "Canon Log 2"), (.canonLog3, "Canon Log 3"),
+      (.vLog, "V-Log"), (.blackmagicFilmGen5, "Blackmagic Film Gen 5"), (.redLog3G10, "Log3G10")]
+    XCTAssertEqual(Set(labels.map { $0.0 }), Set(LogCurve.allCases))
+    for (curve, label) in labels {
+      XCTAssertEqual(MonitorPass.pictureLabel(stage: .source,
+        codeValues: .log(LogEncoding(curve: curve, gamut: .rec709))), "Source · \(label) code values")
+    }
+  }
+
   static let slog3 = SignalDescription(encoding: .log(.sLog3SGamut3Cine))
 
   func luts(_ gpu: TestGPU) throws -> (MonitorLUT, MonitorLUT) {

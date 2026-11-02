@@ -162,7 +162,8 @@ final class CacheGeometryRegressionTests: XCTestCase {
 
   /// A broken declared pixel aspect ratio (NaN, ±∞, 0, negative) reports
   /// `.unsupportedGeometry` and shows square pixels, as an out-of-range one does;
-  /// the public getter stays finite, the geometry carries 0 and a NaN rebuilds once.
+  /// the public getter stays finite, invalid declarations carry 0 in geometry,
+  /// finite positive declarations are preserved, and a NaN rebuilds once.
   func testBrokenPixelAspectRatioIsUnsupportedGeometry() throws {
     let gpu = try requireGPU()
     var frame = try PictureTests.picture(width: 48, height: 27).frame(gpu, signal: .rec709)
@@ -181,7 +182,10 @@ final class CacheGeometryRegressionTests: XCTestCase {
       let rebuilds = pass.rebuildCount
       _ = try render(gpu, frame, state: MonitorState(), width: 96, height: 96, pass: pass)
       XCTAssertEqual(pass.rebuildCount, rebuilds, "PAR \(par)")
-      XCTAssertEqual(frame.geometry, frame.geometry)
+      XCTAssertEqual(
+        frame.geometry,
+        MonitorFrameGeometry(width: 48, height: 27, pixelAspectRatio: par.isFinite && par > 0 ? par : 0),
+        "PAR \(par) preserves finite positive declarations while carrying unusable geometry")
     }
     // Freeze keeps the declared ratio.
     frame.pixelAspectRatio = .nan

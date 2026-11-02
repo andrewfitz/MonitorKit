@@ -318,7 +318,7 @@ One per surface (confined): draws a feed's frame with this surface's tools.
 | `outputColor` | `MonitorOutputColor`, default `.signalNative` |
 | `status` | `MonitorStatus` after the last prepare |
 | `layout`, `colorPipeline`, `usesSpecializedPipeline` | `colorPipeline`: share it with a `ScopeRenderer` drawn into the same layer |
-| `persistentMemoryBytes`, `uniformLength` (5120), `rebuildCount`, `statusRebuildCount`, `guideBuildCount`, `currentParameters`, `currentGuides` | Diagnostics |
+| `persistentMemoryBytes`, `uniformLength` (5376), `rebuildCount`, `statusRebuildCount`, `guideBuildCount`, `currentParameters`, `currentGuides` | Diagnostics |
 
 `MonitorViewport(x:y:width:height:pixelsPerPoint:)` is where a surface draws in target pixels; `pixelsPerPoint` (0.25…16) scales guide strokes and zebra stripes. `MonitorRenderTargetFormat(colorPixelFormat:depthPixelFormat:stencilPixelFormat:sampleCount:additionalColorPixelFormats:)`, or `MonitorRenderTargetFormat(passDescriptor)`, describes your pass. `MonitorLayout(frame:state:viewport:)` is the layout the pass will use, on any thread.
 
@@ -410,7 +410,7 @@ func unfreeze(_ feed: MonitorFeed, togglesOften: Bool) {
 | Type | Purpose |
 | --- | --- |
 | `MonitorSubmission` | One host command buffer: `commandBuffer` (`any MTL4CommandBuffer`), `index` (≥ 1, shared by every encode into it), `completedIndex` (the highest *contiguous* completed index), `uniforms` (an optional host allocator). `init(commandBuffer:index:completedIndex:uniforms:)`, or `init(commandBuffer:index:framesInFlight:uniforms:)` for a host that never has more than `framesInFlight` submissions in flight |
-| `MonitorUniformAllocator`, `MonitorUniformAllocation` | Your transient uniform memory: `allocateUniforms(length:)` returns 256-byte-aligned, resident memory valid until the submission completes. Sizes: `MonitorPass.uniformLength` 5120, `MonitorFeed.uniformLength` 1024, `ScopeAccumulator.uniformLength` 1280, `ScopeGroup.uniformLength` 2048, `ScopeRenderer.uniformLength` 768 and `graticuleUniformLength` 2304 |
+| `MonitorUniformAllocator`, `MonitorUniformAllocation` | Your transient uniform memory: `allocateUniforms(length:)` returns 256-byte-aligned, resident memory valid until the submission completes. Sizes: `MonitorPass.uniformLength` 5376, `MonitorFeed.uniformLength` 1024, `ScopeAccumulator.uniformLength` 1280, `ScopeGroup.uniformLength` 2048, `ScopeRenderer.uniformLength` 768 and `graticuleUniformLength` 2304 |
 | `MonitorResidency` | The residency set of everything MonitorKit owns, with deferred release: `set`, `add(_:)`, `retire(_:resident:after:)`, `observe(_:)`, `release(through:)`, `contains(_:)`, `latestSubmission`, `completedSubmission`, `pendingReleaseCount`, `commitCount`. Thread-safe |
 | `MonitorUniformRing` | A noncopyable ring of uniform slots, the library's default when `uniforms` is nil; public for hosts building their own encoders |
 
@@ -567,7 +567,7 @@ Pure Swift and Accelerate. Realtime-safe: everything is allocated at init; `proc
 | `AudioMeterConfiguration` | [FEATURES §8](FEATURES.md#8-audio); `ppmBallistics`, `loudnessChannels` |
 | `AudioMeterSnapshot` | `sequence`, `frameCount`, `channelCount`, `channels` (`InlineArray<16, AudioChannelLevels>`, or `snapshot[channel:]`), `loudness` (`LoudnessSnapshot`), `programmeChannelMask`, `maximumTruePeak`, `programmeMaximumTruePeak` (R 128 Max TP), `vuReferenceDBFS`, `ppmAlignmentDBFS`, `correlation` |
 | `AudioChannelLevels`, `LoudnessSnapshot` | dBFS / dBTP / VU / PPM readings, clip count; M, S, I, LRA, maxima, duration |
-| `LoudnessMeter` | Loudness alone: `init(sampleRate:channels:)`, the same `process` overloads, `snapshot()`, `resetMeasurement()`, `reset()`, `pauseMeasurement()`, `resumeMeasurement()` |
+| `LoudnessMeter` | Loudness alone: `init(sampleRate:channels:)`, the same `process` overloads, `snapshot()`, `resetMeasurement()`, `reset()`, `pauseMeasurement()`, `resumeMeasurement()`, `flush()` (discard an incomplete final tick and apply pending resets) |
 | `AudioMeterKinds`, `AlignmentLevel`, `PPMType`, `PPMBallistics`, `VUBallistics`, `RMSScale`, `LoudnessChannel`, `AudioSampleFormat`, `audioMeterMaximumChannelCount` | Configuration values |
 | `MeterScale`, `MeterScaleMark`, `MeterZone`, `MeterZoneKind`, `MeterScaleUnit`, `MeterScaleMapping`, `MeterScalePoint`, `LoudnessScaleRange` | Marks and zones: `digitalPeak(unit:range:alignment:maximumPeak:)`, `expandedPeak(unit:reference:cautionLevel:maximumPeak:)`, `vu`, `ppm(_:)`, `ppmNordic`, `loudness(_:unit:target:)`; `position(of:)`, `zone(of:)`, `zoneSpans`, `ticks`, `layout(level:hold:)` |
 | `MeterZoneSpan`, `MeterTick`, `MeterChannelLayout` (`litSpans(_:)`) | A scale's zones and marks on the travel, and one channel's bar and hold line |

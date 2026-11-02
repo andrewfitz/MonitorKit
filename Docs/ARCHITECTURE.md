@@ -33,7 +33,7 @@ The binding contract for everyone working on MonitorKit. User-facing documentati
 - **Completion contract.** `completedIndex` is the highest *contiguous* completed submission: that one and every earlier one have completed or were abandoned. Feedback handlers can complete out of order, so a host keeps a done-set and advances a watermark (`Tests/MonitorKitTests/Metal4Support.swift`). Reporting a non-contiguous maximum would reuse ring slots and free resources still in flight. A host that limits frames in flight with a semaphore can use `MonitorSubmission(commandBuffer:index:framesInFlight:)` instead.
 - **Residency.** `MonitorEngine.residency` (a `MonitorResidency`) holds everything the library owns: placeholders, focus masks, Freeze planes, rings, argument tables' resources and the feeds' LUT textures (counted, so a LUT shared by two feeds stays until both release it). `ScopeEngine(…, residency:)` can take the same object, so the host attaches one set. The host attaches `residency.set` to its queue once. Host frames and targets stay the host's to make resident (`MonitorFrame.addResidency(to:)` when a texture is first wrapped, e.g. in an IOSurface-keyed cache, never per frame). Call `feed.updateResidency()` before other Metal 4 work reads a feed's LUTs outside MonitorKit.
 - **Argument tables.** Each object owns one table, made on its first Metal 4 encode (pass 7 textures / 5 buffers, feed 6 / 4, accumulator 5 / 6, group 5 / 15, renderer 2 / 3), or ahead of it for the scope objects (`ScopeAccumulator`, `ScopeGroup` and `ScopeRenderer.prepareMetal4()`). Metal 4 snapshots bindings at each draw or dispatch, so reusing a table across encodes is safe. In a host encoder the library binds its own table; hosts rebind theirs afterwards.
-- **Uniform sizes per encode** (`uniformLength`, 256-byte offsets): `MonitorPass` 5120 B (the frame block holds the 160 B `mk_PassFrames`: the source and the output reading's `FrameParameters`; two LUT blocks, `PassParameters` 1520 at offset 768, `GuideParameters` 2592 at 2304), `MonitorFeed` 1024, `ScopeAccumulator` 1280, `ScopeGroup` 2048 (fused pass; unfused members ask their own), `ScopeRenderer` 768 per `prepare` plus `graticuleUniformLength` 2304 only when the graticule changes. Use the constants, not hand-computed struct sizes.
+- **Uniform sizes per encode** (`uniformLength`, 256-byte offsets): `MonitorPass` 5376 B (the frame block holds the 160 B `mk_PassFrames`: the source and the output reading's `FrameParameters`; two LUT blocks, `PassParameters` 1680 at offset 768, `GuideParameters` 2592 at 2560), `MonitorFeed` 1024, `ScopeAccumulator` 1280, `ScopeGroup` 2048 (fused pass; unfused members ask their own), `ScopeRenderer` 768 per `prepare` plus `graticuleUniformLength` 2304 only when the graticule changes. Use the constants, not hand-computed struct sizes.
 - **Barriers**, all encoded by the library, as narrow as correctness allows:
 
 | Work | Barrier |
@@ -203,7 +203,7 @@ public final class MonitorPass {                       // one per surface
   public func encodeCompute(…, submission:, encoder: any MTL4ComputeCommandEncoder) throws
   public private(set) var status: MonitorStatus        // why a tool is unavailable, the active labels
   public var persistentMemoryBytes: Int                // 0 classic; its ring on Metal 4
-  public static let uniformLength: Int                 // 5120
+  public static let uniformLength: Int                 // 5376
 }
 
 public final class MonitorMultiview {                  // several surfaces, one render pass

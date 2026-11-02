@@ -96,6 +96,15 @@ public struct PassParameters: Sendable {
   /// OOTF's); w: k1·L / 100, eq. (5)'s linear segment. BT.2100's by default.
   public var sourceWeights = Self.sourceWeights(.rec2020)
 
+  /// The false-colour gap grey belongs to the measured stage, independently of
+  /// the picture/navigator stage. w enables this metadata for library passes.
+  public var falseColorPipeline = SIMD4<UInt32>.zero
+  public var falseColorFlags = SIMD4<UInt32>.zero
+  public var falseColorToneMap = SIMD4<Float>(1, 1, 1, 1)
+  public var falseColorWeights = SIMD4<Float>.zero
+  public var falseColorToTarget: InlineArray<3, SIMD4<Float>> = [SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0)]
+  public var falseColorTransform: InlineArray<3, SIMD4<Float>> = [SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0)]
+
   public init() {}
 
   /// `hlgToSDR` for the 1000 cd/m² HLG decode.

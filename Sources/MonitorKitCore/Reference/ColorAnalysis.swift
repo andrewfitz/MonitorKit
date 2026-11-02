@@ -83,6 +83,7 @@ public enum ColorGamut: String, Codable, Sendable {
   case rec709, rec2020, sGamut3, sGamut3Cine
   /// ALEXA Wide Gamut 3 (LogC3 cameras) and 4 (ALEXA 35, LogC4).
   case arriWideGamut3, arriWideGamut4
+  case canonCinemaGamut, vGamut, blackmagicWideGamutGen5, redWideGamutRGB
   public var luminanceCoefficients: ColorRGB {
     switch self {
     case .rec709: return ColorRGB(r: 0.2126, g: 0.7152, b: 0.0722)
@@ -95,6 +96,8 @@ public enum ColorGamut: String, Codable, Sendable {
     case .arriWideGamut3:
       // ARRI LogC3 white paper appendix, published to 6 decimals.
       return ColorRGB(r: 0.291954, g: 0.823841, b: -0.115795)
+    case .canonCinemaGamut, .vGamut, .blackmagicWideGamutGen5, .redWideGamutRGB:
+      return toXYZ.green
     case .arriWideGamut4:
       // ARRI LogC4 specification, eq. 5a.
       return ColorRGB(r: 0.2545241764, g: 0.7814777327, b: -0.0360019091)

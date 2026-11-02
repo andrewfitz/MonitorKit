@@ -154,6 +154,18 @@ final class OutputColorGPUTests: XCTestCase {
     let logC3 = try XCTUnwrap(LogEncoding(profileID: "arri-logc3-ei800"))
     let rescaled: (LogEncoding) -> LogEncoding = { var l = $0; l.transport = .fullRescaledToLegal; return l }
     let encodings: [(LogEncoding, CodeRange, PixelLayout)] = [
+      (try XCTUnwrap(LogEncoding(profileID: "canon-log-cinemagamut")), .legal, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "canon-log-cinemagamut")), .full, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "canon-log2-cinemagamut")), .legal, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "canon-log2-cinemagamut")), .full, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "canon-log3-cinemagamut")), .legal, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "canon-log3-cinemagamut")), .full, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "panasonic-vlog-vgamut")), .legal, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "panasonic-vlog-vgamut")), .full, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "blackmagic-film-gen5-widegamut")), .legal, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "blackmagic-film-gen5-widegamut")), .full, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "red-log3g10-widegamutrgb")), .legal, .v210),
+      (try XCTUnwrap(LogEncoding(profileID: "red-log3g10-widegamutrgb")), .full, .v210),
       (.sLog3SGamut3Cine, .legal, .v210), (.sLog3SGamut3, .full, .v210),
       (logC3, .legal, .v210), (logC3, .full, .v210),
       (try XCTUnwrap(LogEncoding(profileID: "arri-alexa35-logc4-ei800")), .legal, .v210),

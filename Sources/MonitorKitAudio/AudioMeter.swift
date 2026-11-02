@@ -46,6 +46,7 @@ public final class AudioMeter: @unchecked Sendable {
     var chunkTruePeak: Float = 0
     /// Energy of the current RMS tick.
     var rmsEnergy = 0.0
+    var vuReading = 0.0
   }
 
   /// The RMS window's energy, kept as a running sum so a publish reads one
@@ -578,7 +579,7 @@ public final class AudioMeter: @unchecked Sendable {
     if runsVU {
       // The envelope slot is free once the true peak and PPM have run.
       vDSP_vabs(x, 1, envelopes[slot], 1, length)
-      vu.advance(vuStates + 2 * c, rectified: envelopes[slot], count: n)
+      s.pointee.vuReading = vu.advance(vuStates + 2 * c, rectified: envelopes[slot], count: n)
     }
 
     let peak = s.pointee.chunkPeak
@@ -746,7 +747,7 @@ public final class AudioMeter: @unchecked Sendable {
         levels.truePeakMax = amplitudeDB(s.pointee.trueMax)
       }
       if runsRMS { levels.rms = amplitudeDB((rmsWindows[c].energy / window).squareRoot() * rmsGain) }
-      if runsVU { levels.vu = amplitudeDB(max(vuStates[2 * c], 0) * vuGain) }
+      if runsVU { levels.vu = amplitudeDB(max(s.pointee.vuReading, 0) * vuGain) }
       if runsPPM {
         levels.ppm = amplitudeDB(ppmStates[c].top * ppmGain)
         ppm.restart(&ppmStates[c])

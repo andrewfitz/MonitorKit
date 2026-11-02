@@ -84,11 +84,31 @@ float mk_logC4Decode(float v) {
   const float s = (7 * M_LN2_F * exp2(7 - 14 * c / b)) / (a * b), t = (exp2(14 * (-c / b) + 6) - 64) / a;
   return v >= 0 ? (exp2(14 * (v - c) / b + 6) - 64) / a : v * s + t;
 }
-// curve: 1 S-Log3, 2 LogC3, 3 LogC4 (LogCurve order + 1).
+// Appended IDs preserve the original S-Log3/ARRI shader ABI.
+float mk_cameraLogDecode(float v, uint curve) {
+  if (curve == 4 || curve == 5) {
+    float a = curve == 4 ? .45310179f : .24136077f;
+    float b = curve == 4 ? 10.1596f : 87.099375f;
+    float c = curve == 4 ? .12512248f : .092864125f;
+    return sign(v - c) * (pow(10.0f, abs(v - c) / a) - 1) / b * .9f;
+  }
+  if (curve == 6) {
+    if (v < .097465473f) return -(pow(10.0f, (.12783901f - v) / .36726845f) - 1) / 14.98325f * .9f;
+    if (v <= .15277891f) return (v - .12512219f) / 1.9754798f * .9f;
+    return (pow(10.0f, (v - .12240537f) / .36726845f) - 1) / 14.98325f * .9f;
+  }
+  if (curve == 7) return v < .181f ? (v - .125f) / 5.6f : pow(10.0f, (v - .598206f) / .241514f) - .00873f;
+  if (curve == 8) return v < 8.283605932402494f * .005f + .09246575342465753f
+    ? (v - .09246575342465753f) / 8.283605932402494f
+    : exp((v - .5300133392291939f) / .08692876065491224f) - .005494072432257808f;
+  if (curve == 9) return v < 0 ? v / 15.1927f - .01f : (pow(10.0f, v / .224282f) - 1) / 155.975327f - .01f;
+  return NAN;
+}
 float3 mk_logDecode(float3 v, uint curve) {
+  if (curve == 1) return float3(mk_sLog3Decode(v.r), mk_sLog3Decode(v.g), mk_sLog3Decode(v.b));
   if (curve == 2) return float3(mk_logC3Decode(v.r), mk_logC3Decode(v.g), mk_logC3Decode(v.b));
   if (curve == 3) return float3(mk_logC4Decode(v.r), mk_logC4Decode(v.g), mk_logC4Decode(v.b));
-  return float3(mk_sLog3Decode(v.r), mk_sLog3Decode(v.g), mk_sLog3Decode(v.b));
+  return float3(mk_cameraLogDecode(v.r, curve), mk_cameraLogDecode(v.g, curve), mk_cameraLogDecode(v.b, curve));
 }
 // The LogC3 EI800 encode as full 10-bit code: the ARRI-style reference on S-Log3.
 float mk_logC3ReferenceCode(float y) {
@@ -122,7 +142,7 @@ float mk_exposureLinear(float v, uint transfer) {
 // The log curve's signal value from range-expanded values (LogCurve.signal):
 // S-Log3 is defined on 10-bit codes in any container; LogC fills the container's range.
 float3 mk_logSignal(float3 expanded, uint curve, constant mk_FrameParams& f) {
-  if (curve == 1) return mk_nativeLog(expanded, f);
+  if (curve == 1 || (curve >= 4 && curve <= 7) || curve == 9) return mk_nativeLog(expanded, f);
   return f.options.y != 0 && f.options.z != 0 ? mk_unsqueezeLegal(expanded * f.levels.y, f) : expanded;
 }
 
@@ -265,6 +285,12 @@ struct mk_PassParams {
   float4 outputReading;      // w: 1 when the output and monitor stages decode with their own reading (mk_PassFrames.output), 0: the source's; xyz: its reciprocals as above
   float4 hlgToSDR;           // BT.2446 Method C eq. (5) for the HLG decode peak L: x L / Y_HDR,ip, y k3, z k2·ln 2 / 100, w k4 / 100
   float4 sourceWeights;      // rgb: luminance weights of the signal's primaries, w: k1·L / 100
+  uint4 falseColorPipeline; // transform, picture transfer, target transfer, enabled
+  uint4 falseColorFlags;    // x: roll-off
+  float4 falseColorToneMap;
+  float4 falseColorWeights;
+  float4 falseColorToTarget[3];
+  float4 falseColorTransform[3];
 };
 
 // Mirrors MonitorKit.GuideParameters: guide strokes in viewport pixels, drawn
@@ -630,13 +656,14 @@ float3 mk_logSignalFast(float3 expanded, uint curve, constant mk_FrameParams& f)
   // mk_unsqueezeLegal: (code - 16s) / 219s with s = 2^(n-8).
   float scale = (f.levels.y + 1) * (1.0f / 256);
   float3 unsqueezed = (expanded * f.levels.y - 16 * scale) * mk_div(1.0f, 219 * scale);
-  if (curve == 1 && !full) return rescaled ? expanded : (expanded * 876 + 64) * (1.0f / 1023);
+  if ((curve == 1 || (curve >= 4 && curve <= 7) || curve == 9) && !full) return rescaled ? expanded : (expanded * 876 + 64) * (1.0f / 1023);
   return full && rescaled ? unsqueezed : expanded;
 }
 
 // The camera log decodes (mk_logDecode) with fast exp2, for the display transform,
 // which runs on every pixel; false colour keeps the exact ones.
 float3 mk_logDecodeFast(float3 v, uint curve) {
+  if (curve >= 4) return mk_logDecode(v, curve);
   if (curve == 2) {
     // LogC3 EI 800: (10^((t - d)/c) - b)/a above the cut, linear below.
     float3 high = (fast::exp2((v - .385537f) * (M_LOG2E_F * M_LN10_F / .247190f)) - .052272f) * (1 / 5.555556f);
@@ -661,26 +688,26 @@ float3 mk_logDecodeFast(float3 v, uint curve) {
 // The monitor stage (in the source's encoding) to the picture encoding. `f` is
 // the reading `c` was decoded with (its range sets the log curve's signal): the
 // picture stage's for the picture, the measured stage's for a false-colour grey.
-float3 mk_displayTransform(float3 c, constant mk_FrameParams& f, thread const mk_Inputs& in) {
+float3 mk_displayTransform(float3 c, constant mk_FrameParams& f, thread const mk_Inputs& in, uint transform, uint curve, constant float4* matrix, float4 toneMap) {
   constant mk_PassParams& p = in.pass;
-  if (MK_TRANSFORM == 1) {
+  if (transform == 1) {
     // MonitorKit display assist v1: scene light, Rec.709, the BT.709 OETF with a
     // shoulder. One log2 and one exp2 per channel serve both branches: the OETF's
     // x^0.45 and the shoulder's (x / xk)^-q.
-    float3 x = mk_rows(p.transformMatrix, mk_logDecodeFast(mk_logSignalFast(c, MK_LOG_CURVE, f), MK_LOG_CURVE));
+    float3 x = mk_rows(matrix, mk_logDecodeFast(mk_logSignalFast(c, curve, f), curve));
     bool3 over = x > p.assist.x;
     float3 lx = fast::log2(max(x, .018f));
     float3 t = fast::exp2(select(.45f * lx, -p.assist.z * (lx - p.assist.w), over));
     float3 oetf = select(1.099f * t - .099f, 4.5f * max(x, 0.0f), x < .018f);
     return select(oetf, p.assist.y + (1 - p.assist.y) * (1 - t), over);
   }
-  if (MK_TRANSFORM == 2) {
+  if (transform == 2) {
     // PQ by display light: the EETF to graphics white, Rec.709, BT.1886.
     float3 e = saturate(c);
-    float3 l = mk_rows(p.transformMatrix, mk_toneMapPQ(mk_pqNits3(e), max3(e.r, e.g, e.b), p.toneMap) * p.colorLevels.y);
+    float3 l = mk_rows(matrix, mk_toneMapPQ(mk_pqNits3(e), max3(e.r, e.g, e.b), toneMap) * p.colorLevels.y);
     return mk_powf(saturate(l), float3(1 / 2.4f));
   }
-  if (MK_TRANSFORM == 3) {
+  if (transform == 3) {
     // HLG by BT.2446 Method C: the EOTF for the decode peak L, eq. (5) on the
     // luminance at constant chromaticity to 100 cd/m² = 1, Rec.709 (BT.2407 §2's
     // matrix, clipped), BT.1886. With scene light E and Ys its luminance, display light is
@@ -692,13 +719,18 @@ float3 mk_displayTransform(float3 c, constant mk_FrameParams& f, thread const mk
     float ratio = ys * lift * p.hlgToSDR.x;                    // Y_HDR / Y_HDR,ip
     float k = ratio < 1 ? p.sourceWeights.w * lift
                         : mk_div(p.hlgToSDR.z * fast::log2(ratio - p.hlgToSDR.y) + p.hlgToSDR.w, ys);
-    return mk_powf(saturate(mk_rows(p.transformMatrix, e * k)), float3(1 / 2.4f));
+    return mk_powf(saturate(mk_rows(matrix, e * k)), float3(1 / 2.4f));
   }
   return c;
 }
 
+float3 mk_displayTransform(float3 c, constant mk_FrameParams& f, thread const mk_Inputs& in) {
+  constant mk_PassParams& p = in.pass;
+  return mk_displayTransform(c, f, in, MK_TRANSFORM, MK_LOG_CURVE, in.pass.transformMatrix, in.pass.toneMap);
+}
+
 // Linear display light, 1 = graphics white, from transfer `tf`.
-float3 mk_toLinear(float3 v, uint tf, constant mk_PassParams& p) {
+float3 mk_toLinear(float3 v, uint tf, constant mk_PassParams& p, float3 weights) {
   if (tf == 2) {
     float3 a = abs(v);
     return sign(v) * select(mk_powf((a + .055f) * (1 / 1.055f), float3(2.4f)), a * (1 / 12.92f), a <= .04045f);
@@ -706,8 +738,12 @@ float3 mk_toLinear(float3 v, uint tf, constant mk_PassParams& p) {
   if (tf == 3) return mk_mirrorPow(v, 2.2f);
   if (tf == 4) return v;
   if (tf == 5) return mk_pqNits3(v) * p.colorLevels.y;
-  if (tf == 6) return mk_hlgOOTF(mk_hlgInverseOETF3(v), p.hlgSource.x, p.hlgSource.y, p.pictureWeights.rgb) * p.colorLevels.y;
+  if (tf == 6) return mk_hlgOOTF(mk_hlgInverseOETF3(v), p.hlgSource.x, p.hlgSource.y, weights) * p.colorLevels.y;
   return mk_mirrorPow(v, 2.4f);
+}
+
+float3 mk_toLinear(float3 v, uint tf, constant mk_PassParams& p) {
+  return mk_toLinear(v, tf, p, p.pictureWeights.rgb);
 }
 
 // Linear display light, 1 = graphics white, encoded with `tf` and clipped to what it
@@ -742,6 +778,19 @@ float3 mk_present(float3 v, constant mk_PassParams& p) {
 // and the output conversion like the picture. Both come out in target values. `f`
 // is the reading the grey was decoded with, whatever stage the picture shows, so
 // false colour is the same image on every picture stage.
+// Gap greys carry the measured stage's encoding, independently of the main
+// picture and navigator. Hosts with legacy/default parameters keep their path.
+float3 mk_falseColorPresent(float3 grey, constant mk_FrameParams& f, thread const mk_Inputs& in) {
+  constant mk_PassParams& p = in.pass;
+  if (p.falseColorPipeline.w == 0) return mk_present(mk_displayTransform(grey, f, in), p);
+  float3 v = mk_displayTransform(grey, f, in, p.falseColorPipeline.x, p.luts.z, p.falseColorTransform, p.falseColorToneMap);
+  uint target = p.falseColorPipeline.z;
+  if (target == 0) return v;
+  float3 l = mk_rows(p.falseColorToTarget, mk_toLinear(v, p.falseColorPipeline.y, p, p.falseColorWeights.rgb));
+  if (p.falseColorFlags.x != 0) l = mk_toneMap(l * p.colorLevels.x, p.falseColorToneMap) * p.colorLevels.y;
+  return mk_fromLinear(l, target, p.targetWeights.rgb, p);
+}
+
 float3 mk_bands(float value, float3 fallback, constant mk_FrameParams& f, thread const mk_Inputs& in) {
   constant mk_PassParams& p = in.pass;
   // Scanned from the last band without an early exit, so the tests do not wait on each other.
@@ -749,7 +798,7 @@ float3 mk_bands(float value, float3 fallback, constant mk_FrameParams& f, thread
   int band = -1;
   for (int i = int(min(p.modes.z, 16u)) - 1; i >= 0; i--)
     if (value >= p.bandEdges[i].x && value < p.bandEdges[i].y) band = i;
-  return band >= 0 ? p.bandColors[band].rgb : mk_present(mk_displayTransform(fallback, f, in), p);
+  return band >= 0 ? p.bandColors[band].rgb : mk_falseColorPresent(fallback, f, in);
 }
 
 // Log modes classify the source pixel under the display pixel's centre, never a
@@ -761,7 +810,7 @@ float3 mk_logFalseColor(float4 centre, thread const mk_Inputs& in) {
   float3 native = mk_nativeLog(centre.rgb, f);
   // Unbanded pixels are native-signal grey, or with the log transform on, the
   // transform of the decoded grey, as the picture is shown.
-  bool transformed = MK_TRANSFORM != 0;
+  bool transformed = (p.falseColorPipeline.w != 0 ? p.falseColorPipeline.x : MK_TRANSFORM) != 0;
   float3 decodedGrey = float3(saturate(mk_luma709(centre.rgb)));
   if (measure == MK_FC_SONY) {
     // Sony Pattern 2 on native signal luma, in native IRE: (code - 64) / 876.

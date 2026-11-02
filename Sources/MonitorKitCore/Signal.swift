@@ -20,7 +20,7 @@ public enum PixelLayout: Hashable, Codable, Sendable {
   /// Y plane plus interleaved CbCr plane. 8-bit uses `r8Unorm`/`rg8Unorm`;
   /// deeper samples are high-aligned in 16 bits (`r16Unorm`/`rg16Unorm`).
   case biplanar(ChromaSubsampling, bitDepth: Int)
-  /// One RGB(A) texture: BGRA8/RGBA8 (8), RGB10A2 (10), RGBA16 unorm (16) or float.
+  /// One RGB(A) texture: BGRA8/RGBA8 (8), RGB10A2 (10), RGBA16 unorm (12/16) or float.
   case rgb(bitDepth: Int, float: Bool)
 
   public static let nv12 = PixelLayout.biplanar(.s420, bitDepth: 8)
@@ -58,7 +58,7 @@ public enum PixelLayout: Hashable, Codable, Sendable {
     switch self {
     case .v210, .uyvy8, .yuyv8: return true
     case .biplanar(_, let depth): return depth == 8 || depth == 10 || depth == 12 || depth == 16
-    case .rgb(let depth, let float): return float ? depth == 16 || depth == 32 : depth == 8 || depth == 10 || depth == 16
+    case .rgb(let depth, let float): return float ? depth == 16 || depth == 32 : depth == 8 || depth == 10 || depth == 12 || depth == 16
     }
   }
 }
@@ -98,9 +98,12 @@ public enum LogCurve: String, Codable, Sendable, CaseIterable {
   case sLog3
   case arriLogC3
   case arriLogC4
+  case canonLog, canonLog2, canonLog3, vLog, blackmagicFilmGen5, redLog3G10
 
   /// The curve's signal value from a range-expanded sample of a `bitDepth`
-  /// container (10 for float). S-Log3 is defined on 10-bit codes whatever the
+  /// container (10 for float). S-Log3, Canon Log, V-Log and Log3G10 are native
+  /// full-code signals; Blackmagic Gen 5 and ARRI use normalized nominal range.
+  /// S-Log3 is defined on 10-bit codes whatever the
   /// container (Sony technical summary), so a legal container carries
   /// code / 1023 as-is. ARRI LogC fills the container's nominal range (ARRI's
   /// legal and full false-colour tables: legal code = 64 + 876 t, full code =
@@ -108,9 +111,9 @@ public enum LogCurve: String, Codable, Sendable, CaseIterable {
   /// were squeezed into the legal range and then labelled full.
   public func signal(expanded: Double, range: CodeRange, transport: LogTransport, bitDepth: Int = 10) -> Double {
     switch self {
-    case .sLog3:
+    case .sLog3, .canonLog, .canonLog2, .canonLog3, .vLog, .redLog3G10:
       return DecodeReference.nativeLog(expanded: expanded, range: range, transport: transport, bitDepth: bitDepth)
-    case .arriLogC3, .arriLogC4:
+    case .arriLogC3, .arriLogC4, .blackmagicFilmGen5:
       return range == .full && transport == .fullRescaledToLegal
         ? DecodeReference.unsqueezeLegal(expanded: expanded, bitDepth: bitDepth) : expanded
     }
@@ -118,6 +121,11 @@ public enum LogCurve: String, Codable, Sendable, CaseIterable {
 
   /// Normalized native code (code / 1023) to scene-linear reflectance.
   public func decode(_ native: Double) -> Double? {
+    guard let result = decodedValue(native), result.isFinite else { return nil }
+    return result
+  }
+
+  private func decodedValue(_ native: Double) -> Double? {
     switch self {
     case .sLog3: return ColorMath.sLog3Decode(native)
     case .arriLogC3:
@@ -126,6 +134,30 @@ public enum LogCurve: String, Codable, Sendable, CaseIterable {
       let cut = 0.010591, a = 5.555556, b = 0.052272, c = 0.247190, d = 0.385537
       let e = 5.367655, f = 0.092809
       return native > e * cut + f ? (pow(10, (native - d) / c) - b) / a : (native - f) / e
+    case .canonLog, .canonLog2:
+      guard native.isFinite else { return nil }
+      // Canon white paper Appendix [1,2]: relative exposure to reflectance ×0.9.
+      let a = self == .canonLog ? 0.45310179 : 0.24136077
+      let b = self == .canonLog ? 10.1596 : 87.099375
+      let c = self == .canonLog ? 0.12512248 : 0.092864125
+      let delta = native - c
+      return (delta < 0 ? -1 : 1) * (pow(10, abs(delta) / a) - 1) / b * 0.9
+    case .canonLog3:
+      guard native.isFinite else { return nil }
+      if native < 0.097465473 { return -(pow(10, (0.12783901 - native) / 0.36726845) - 1) / 14.98325 * 0.9 }
+      if native <= 0.15277891 { return (native - 0.12512219) / 1.9754798 * 0.9 }
+      return (pow(10, (native - 0.12240537) / 0.36726845) - 1) / 14.98325 * 0.9
+    case .vLog:
+      guard native.isFinite else { return nil }
+      return native < 0.181 ? (native - 0.125) / 5.6 : pow(10, (native - 0.598206) / 0.241514) - 0.00873
+    case .blackmagicFilmGen5:
+      guard native.isFinite else { return nil }
+      return native < 8.283605932402494 * 0.005 + 0.09246575342465753
+        ? (native - 0.09246575342465753) / 8.283605932402494
+        : exp((native - 0.5300133392291939) / 0.08692876065491224) - 0.005494072432257808
+    case .redLog3G10:
+      guard native.isFinite else { return nil }
+      return native < 0 ? native / 15.1927 - 0.01 : (pow(10, native / 0.224282) - 1) / 155.975327 - 0.01
     case .arriLogC4:
       // ARRI LogC4 (ALEXA 35 specification, 2022).
       guard native.isFinite else { return nil }
@@ -162,8 +194,14 @@ public struct LogEncoding: Hashable, Codable, Sendable {
     switch (curve, gamut) {
     case (.sLog3, .sGamut3Cine): return "sony-slog3-sgamut3cine"
     case (.sLog3, .sGamut3): return "sony-slog3-sgamut3"
-    case (.arriLogC3, _): return ARRIFalseColorProfile.logC3EI800.rawValue
-    case (.arriLogC4, _): return ARRIFalseColorProfile.alexa35LogC4EI800.rawValue
+    case (.arriLogC3, .arriWideGamut3): return ARRIFalseColorProfile.logC3EI800.rawValue
+    case (.arriLogC4, .arriWideGamut4): return ARRIFalseColorProfile.alexa35LogC4EI800.rawValue
+    case (.canonLog, .canonCinemaGamut): return "canon-log-cinemagamut"
+    case (.canonLog2, .canonCinemaGamut): return "canon-log2-cinemagamut"
+    case (.canonLog3, .canonCinemaGamut): return "canon-log3-cinemagamut"
+    case (.vLog, .vGamut): return "panasonic-vlog-vgamut"
+    case (.blackmagicFilmGen5, .blackmagicWideGamutGen5): return "blackmagic-film-gen5-widegamut"
+    case (.redLog3G10, .redWideGamutRGB): return "red-log3g10-widegamutrgb"
     default: return nil
     }
   }
@@ -176,6 +214,12 @@ public struct LogEncoding: Hashable, Codable, Sendable {
       self.init(curve: .arriLogC3, gamut: .arriWideGamut3, transport: transport)
     case ARRIFalseColorProfile.alexa35LogC4EI800.rawValue:
       self.init(curve: .arriLogC4, gamut: .arriWideGamut4, transport: transport)
+    case "canon-log-cinemagamut": self.init(curve: .canonLog, gamut: .canonCinemaGamut, transport: transport)
+    case "canon-log2-cinemagamut": self.init(curve: .canonLog2, gamut: .canonCinemaGamut, transport: transport)
+    case "canon-log3-cinemagamut": self.init(curve: .canonLog3, gamut: .canonCinemaGamut, transport: transport)
+    case "panasonic-vlog-vgamut": self.init(curve: .vLog, gamut: .vGamut, transport: transport)
+    case "blackmagic-film-gen5-widegamut": self.init(curve: .blackmagicFilmGen5, gamut: .blackmagicWideGamutGen5, transport: transport)
+    case "red-log3g10-widegamutrgb": self.init(curve: .redLog3G10, gamut: .redWideGamutRGB, transport: transport)
     default: return nil
     }
   }

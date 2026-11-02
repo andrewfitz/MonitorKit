@@ -72,7 +72,7 @@ public enum FalseColorTable {
     switch curve {
     case .arriLogC3: return .logC3EI800
     case .arriLogC4: return .alexa35LogC4EI800
-    case .sLog3: return nil
+    case .sLog3, .canonLog, .canonLog2, .canonLog3, .vLog, .blackmagicFilmGen5, .redLog3G10: return nil
     }
   }
 

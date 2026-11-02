@@ -611,14 +611,21 @@ public final class MonitorEngine: @unchecked Sendable {
         // The compiler's asynchronous build (Metal's compiler threads) awaited from
         // a task; no thread or queue of the library's own.
         Task.detached(priority: .utility) { [self] in
-          guard let compiler else { return }
+          // Keep the claim terminal on every exit, including task cancellation or
+          // an unexpected compiler failure. A stranded claim makes all future
+          // callers treat this key as permanently in flight.
+          defer { finishBuild(buildKey) }
+          guard let compiler else {
+            failedPipelines.withLock { _ = $0.insert(buildKey) }
+            return
+          }
           let descriptor = metal4Descriptor(key, values: Self.constants(
             layout: key.layout, variant: key.variant, srgbTarget: key.target.colorPixelFormat.isSRGB, color: key.color))
-          if let state = try? await makeRenderState(descriptor, compiler) {
+          do {
+            let state = try await makeRenderState(descriptor, compiler)
             _ = store(state, for: key)
-            finish(key)
-          } else {
-            finishFailed(buildKey)
+          } catch {
+            failedPipelines.withLock { _ = $0.insert(buildKey) }
           }
         }
         return nil
@@ -746,16 +753,20 @@ public final class MonitorEngine: @unchecked Sendable {
       asynchronousBuilds.add(1, ordering: .relaxed)
       if compiler != nil {
         Task.detached(priority: .utility) { [self] in
-          guard let compiler else { return }
+          defer { finishBuild(pendingKey) }
+          guard let compiler else {
+            failedPipelines.withLock { _ = $0.insert(pendingKey) }
+            return
+          }
           let d = metal4ComputeDescriptor(
             "mk_pictureKernel",
             Self.constants(layout: key.layout, variant: key.variant, srgbTarget: false, color: key.color))
-          guard let state = try? await makeComputeState(d, compiler) else {
-            finishFailed(pendingKey)
-            return
+          do {
+            let state = try await makeComputeState(d, compiler)
+            _ = storeCompute(state, for: key)
+          } catch {
+            failedPipelines.withLock { _ = $0.insert(pendingKey) }
           }
-          _ = storeCompute(state, for: key)
-          finishBuild(pendingKey)
         }
         return nil
       }
@@ -834,8 +845,8 @@ public final class MonitorEngine: @unchecked Sendable {
       guard claimAsynchronous(buildKey) else { continue }
       if compiler != nil {
         Task.detached(priority: .utility) { [self] in
-          guard let compiler else { return }
           defer { finishBuild(buildKey) }
+          guard let compiler else { return }
           let d = metal4ComputeDescriptor(Self.copyFunction(integer: integer), nil)
           if let state = try? await makeComputeState(d, compiler) { _ = storeCopy(state, integer: integer) }
         }

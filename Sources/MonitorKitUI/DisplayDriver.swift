@@ -290,7 +290,7 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
   func releaseIdle() {
     lock.lock()
     noteHostCompletion()
-    noteCompletion()
+    _ = noteCompletion()
     if isIdle, let queue, !probeIsMarker, renderer.encodeCount > vouched, let marker = queue.makeCommandBuffer() {
       // An empty buffer after the last frame: once it completes, every encode has.
       marker.label = "MonitorKitUI idle marker"
@@ -314,10 +314,18 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
   }
 
   /// The encodes the view's completed command buffers vouch for, to the renderer.
-  private func noteCompletion() {
-    guard let cb = probe else { return }
+  /// Advances renderer completion state when the probe has finished.
+  ///
+  /// Most callers only need the state transition; the tick path consumes the
+  /// optional command-buffer error to report it to the host. Marking the
+  /// result discardable keeps the idle-release path explicit without turning
+  /// an intentionally ignored error into a warnings-as-errors failure.
+  @discardableResult
+  private func noteCompletion() -> (any Error)? {
+    guard let cb = probe else { return nil }
     let status = cb.status
-    guard status == .completed || status == .error else { return }
+    guard status == .completed || status == .error else { return nil }
+    let commandError = status == .error ? cb.error : nil
     probe = nil
     probeIsMarker = false
     vouched = probeEncode
@@ -331,6 +339,7 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
       }
     }
     renderer.noteCompleted(through: done)
+    return commandError
   }
 
   /// The tick's work under `lock`; returns whether a status or a graticule changed.
@@ -341,8 +350,9 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
     renderer.pixelsPerPoint = pixelsPerPoint
     renderer.displayHeadroom = headroom
     noteHostCompletion()
-    noteCompletion()
+    let commandError = noteCompletion()
     do { try renderer.update() } catch { return (false, false, error) }
+    if let commandError { return (false, false, commandError) }
     let wanted = override.withLock { $0 } ?? renderer.layerColor
     if appliedLayerColor != wanted {
       applyLayerColor(wanted)

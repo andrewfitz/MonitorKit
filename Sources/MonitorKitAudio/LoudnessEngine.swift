@@ -425,6 +425,19 @@ final class LoudnessEngine {
   /// duration from the next tick boundary.
   func setMeasuring(_ measuring: Bool) { state.pointee.requestedMeasuring = measuring }
 
+  /// Ends the current input run without inventing samples for an incomplete
+  /// tick. A partial tick cannot participate in the fixed 5/10 ms windows, so
+  /// its accumulated energy is discarded and the next stream starts on a
+  /// fresh tick boundary.
+  func flush() {
+    let partial = state.pointee.tickPosition
+    guard partial > 0 else { return }
+    energies.update(repeating: 0, count: max(activeCount, 1))
+    if state.pointee.measuring { state.pointee.frames -= partial }
+    state.pointee.tickPosition = 0
+    state.pointee.readings.duration = Double(state.pointee.frames) / sampleRate
+  }
+
   /// Starts a new measurement (integrated, LRA, maxima, duration) from the
   /// next tick boundary; momentary, short-term and the filters run on. The
   /// tick in progress holds audio from before the reset, so it is left out

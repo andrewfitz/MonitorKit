@@ -395,6 +395,13 @@ public struct MonitorColorPipeline: Equatable, Sendable {
     case .sLog3: return "S-Log3"
     case .arriLogC3: return "LogC3"
     case .arriLogC4: return "LogC4"
+    case .canonLog: return "Canon Log"
+    case .canonLog2: return "Canon Log 2"
+    case .canonLog3: return "Canon Log 3"
+    case .vLog: return "V-Log"
+    case .blackmagicFilmGen5: return "Blackmagic Film Gen 5"
+    case .redLog3G10: return "Log3G10"
+
     }
   }
 

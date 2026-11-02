@@ -180,6 +180,21 @@ public final class LoudnessMeter: @unchecked Sendable {
   /// thread; applied by the next `process` call that brings audio.
   public func noteDiscontinuity() { requests.requestDiscontinuity() }
 
+  /// Ends the current input run at a tick boundary. Any samples held in an
+  /// incomplete 5 or 10 ms tick are discarded rather than zero-padded into a
+  /// measurement; call this on the producer thread when a stream stops.
+  /// Pending reset requests are applied and published, just like a zero-length
+  /// `process` call.
+  public func flush() {
+    let reset = applyResetRequests()
+    let hadPartialTick = engine.state.pointee.tickPosition > 0
+    engine.flush()
+    if reset || hadPartialTick {
+      staging.pointee.readings = engine.state.pointee.readings
+      publisher.publish(&staging.pointee)
+    }
+  }
+
   /// Puts integrated loudness, loudness range and `duration` on stand-by
   /// (EBU Tech 3341 section 2.2): audio from now on is left out of them as if
   /// it were cut, while momentary, short-term and their maxima keep running.

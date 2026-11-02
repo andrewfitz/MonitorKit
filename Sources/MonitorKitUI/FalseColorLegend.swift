@@ -212,11 +212,23 @@ public struct FalseColorLegend: Equatable, Sendable {
     case .sGamut3Cine: gamut = "S-Gamut3.Cine"
     case .arriWideGamut3: gamut = "ARRI Wide Gamut 3"
     case .arriWideGamut4: gamut = "ARRI Wide Gamut 4"
+    case .canonCinemaGamut: gamut = "Canon Cinema Gamut"
+    case .vGamut: gamut = "V-Gamut"
+    case .blackmagicWideGamutGen5: gamut = "Blackmagic Wide Gamut Gen 5"
+    case .redWideGamutRGB: gamut = "REDWideGamutRGB"
+
     }
     switch log.curve {
     case .sLog3: return "Sony \(gamut) / S-Log3"
     case .arriLogC3: return "\(gamut) / LogC3"
     case .arriLogC4: return "\(gamut) / LogC4"
+    case .canonLog: return "\(gamut) / Canon Log"
+    case .canonLog2: return "\(gamut) / Canon Log 2"
+    case .canonLog3: return "\(gamut) / Canon Log 3"
+    case .vLog: return "\(gamut) / V-Log"
+    case .blackmagicFilmGen5: return "\(gamut) / Blackmagic Film Gen 5"
+    case .redLog3G10: return "\(gamut) / Log3G10"
+
     }
   }
 

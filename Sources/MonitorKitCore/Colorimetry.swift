@@ -121,6 +121,14 @@ extension ColorGamut {
       return (Chromaticity(x: 0.766, y: 0.275), Chromaticity(x: 0.225, y: 0.800), Chromaticity(x: 0.089, y: -0.087))
     case .arriWideGamut3:
       return (Chromaticity(x: 0.6840, y: 0.3130), Chromaticity(x: 0.2210, y: 0.8480), Chromaticity(x: 0.0861, y: -0.1020))
+    case .canonCinemaGamut:
+      return (Chromaticity(x: 0.740, y: 0.270), Chromaticity(x: 0.170, y: 1.140), Chromaticity(x: 0.080, y: -0.100))
+    case .vGamut:
+      return (Chromaticity(x: 0.730, y: 0.280), Chromaticity(x: 0.165, y: 0.840), Chromaticity(x: 0.100, y: -0.030))
+    case .blackmagicWideGamutGen5:
+      return (Chromaticity(x: 0.7177215, y: 0.3171181), Chromaticity(x: 0.2280410, y: 0.8615690), Chromaticity(x: 0.1005841, y: -0.0820452))
+    case .redWideGamutRGB:
+      return (Chromaticity(x: 0.780308, y: 0.304253), Chromaticity(x: 0.121595, y: 1.493994), Chromaticity(x: 0.095612, y: -0.084589))
     case .arriWideGamut4:
       return (Chromaticity(x: 0.7347, y: 0.2653), Chromaticity(x: 0.1424, y: 0.8576), Chromaticity(x: 0.0991, y: -0.0308))
     }
@@ -152,9 +160,11 @@ private enum ColorMatrixCache {
   }
   static let gamuts: [ColorMatrix] = [
     ColorGamut.rec709, .rec2020, .sGamut3, .sGamut3Cine, .arriWideGamut3, .arriWideGamut4,
+    .canonCinemaGamut, .vGamut, .blackmagicWideGamutGen5, .redWideGamutRGB,
   ].map {
     let c = $0.chromaticities
-    return .normalizedPrimaryMatrix(red: c.red, green: c.green, blue: c.blue)
+    return .normalizedPrimaryMatrix(red: c.red, green: c.green, blue: c.blue,
+      white: $0 == .blackmagicWideGamutGen5 ? Chromaticity(x: 0.3127170, y: 0.3290312) : .d65)
   }
   static let gamutConversions: [ColorMatrix] = gamuts.flatMap { source in
     primaryInverses.map { $0.concatenating(source) }
@@ -183,6 +193,10 @@ extension ColorGamut {
     case .sGamut3Cine: return 3
     case .arriWideGamut3: return 4
     case .arriWideGamut4: return 5
+    case .canonCinemaGamut: return 6
+    case .vGamut: return 7
+    case .blackmagicWideGamutGen5: return 8
+    case .redWideGamutRGB: return 9
     }
   }
 }

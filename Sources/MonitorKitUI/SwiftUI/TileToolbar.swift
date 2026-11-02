@@ -125,6 +125,7 @@ public enum MonitorTileTool: String, CaseIterable, Sendable, Identifiable {
     switch log.curve {
     case .sLog3: return .sonySLog3
     case .arriLogC3, .arriLogC4: return .arriLogC
+    case .canonLog, .canonLog2, .canonLog3, .vLog, .blackmagicFilmGen5, .redLog3G10: return .sixBand
     }
   }
 

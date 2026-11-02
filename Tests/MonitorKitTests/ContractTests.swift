@@ -82,8 +82,8 @@ final class ContractTests: XCTestCase {
   /// The library makes no queue, device, thread, blit, command buffer, commit or
   /// wait, on either path. Checked in the sources, since a command buffer cannot
   /// report which encoders it holds. The only commit is of the library's own
-  /// residency set (when an allocation joins or leaves it); the only buffer is the
-  /// Metal 4 uniform ring, made on first use (and when a host outruns it).
+  /// residency set (when an allocation joins or leaves it). Buffers are limited
+  /// to the Metal 4 uniform ring and the raw decoder's GPU staging and uniforms.
   func testSourcesNeverCreateQueuesCommitWaitOrBlit() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
       .deletingLastPathComponent().appendingPathComponent("Sources/MonitorKit").resolvingSymlinksInPath()
@@ -107,7 +107,12 @@ final class ContractTests: XCTestCase {
         "\(file.lastPathComponent) commits something other than the residency set")
       if text.contains("makeBuffer(") { buffers.append(file.lastPathComponent) }
     }
-    XCTAssertEqual(buffers, ["Metal4.swift"])
+    XCTAssertEqual(buffers.sorted(), ["Metal4.swift", "MonitorCVRawFrameDecoder.swift", "MonitorRawFrameDecoder.swift"])
+    for decoder in ["MonitorCVRawFrameDecoder.swift", "MonitorRawFrameDecoder.swift"] {
+      let source = try String(contentsOf: root.appendingPathComponent(decoder), encoding: .utf8)
+      XCTAssertEqual(source.components(separatedBy: "makeBuffer(").count, 2,
+        "\(decoder): one raw staging or uniform buffer allocation site")
+    }
     let ring = try String(contentsOf: root.appendingPathComponent("Metal4.swift"), encoding: .utf8)
     XCTAssertEqual(ring.components(separatedBy: "makeBuffer(").count, 2, "one buffer allocation site")
     let grow = try XCTUnwrap(ring.range(of: "private mutating func grow("))

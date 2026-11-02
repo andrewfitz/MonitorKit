@@ -323,6 +323,33 @@ final class LoudnessTests: XCTestCase {
     XCTAssertEqual(s.duration, 5, accuracy: 1e-9)
   }
 
+  func testFlushDiscardsPartialTickAndDuration() throws {
+    let fs = 48_000.0
+    let m = try LoudnessMeter(sampleRate: fs, channelCount: 1)
+    let block = PlanarBlock(channelCount: 1, capacity: 100)
+    block.pointers[0][0] = 1
+    m.process(planar: block.pointers, frameCount: 1)
+    m.flush()
+    XCTAssertEqual(m.snapshot().duration, 0, accuracy: 1e-12)
+    m.process(planar: block.pointers, frameCount: 100)
+    XCTAssertEqual(m.snapshot().duration, 100 / fs, accuracy: 1e-12)
+  }
+
+  func testFlushPreservesCompleteTicksAndIsIdempotent() throws {
+    let fs = 48_000.0
+    let m = try LoudnessMeter(sampleRate: fs, channelCount: 1)
+    let block = PlanarBlock(channelCount: 1, capacity: 481)
+    m.process(planar: block.pointers, frameCount: 481)
+    m.flush()
+    XCTAssertEqual(m.snapshot().duration, 480 / fs, accuracy: 1e-12)
+    let published = m.publishCount
+    m.flush()
+    XCTAssertEqual(m.snapshot().duration, 480 / fs, accuracy: 1e-12)
+    XCTAssertEqual(m.publishCount, published)
+    m.process(planar: block.pointers, frameCount: 100)
+    XCTAssertEqual(m.snapshot().duration, 580 / fs, accuracy: 1e-12)
+  }
+
   func testInvalidConfigurationsThrow() {
     XCTAssertThrowsError(try LoudnessMeter(sampleRate: 1000, channelCount: 2))
     XCTAssertThrowsError(try LoudnessMeter(sampleRate: 48000, channelCount: 0))

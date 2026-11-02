@@ -243,6 +243,8 @@ struct LevelMeterSource {
   private var maxima: [Float]
   private var clips: [UInt32]
   private var sequence: UInt64?
+  private weak var sourceMeter: AudioMeter?
+  private var barKind: AudioMeterBarKind = .truePeak
   /// The display's clock: the forward steps of the time it is given, so a
   /// wall clock that steps back never freezes the bars or the hold lines.
   private var clock = 0.0
@@ -257,13 +259,21 @@ struct LevelMeterSource {
     clips = Array(repeating: 0, count: 16)
   }
 
-  /// Follows the meter's own fall rate and hold time (its configuration); a no-op when unchanged.
-  func configure(fallRate: Double, holdTime: Double) {
-    guard fallRate != bars[0].fallRate || holdTime != holds[0].holdTime else { return }
+  /// Follows the source, selected reading and ballistics. A new source or kind
+  /// starts fresh even when its snapshot has the same sequence as the old one.
+  func configure(fallRate: Double, holdTime: Double, meter: AudioMeter? = nil, kind: AudioMeterBarKind = .truePeak) {
+    guard fallRate != bars[0].fallRate || holdTime != holds[0].holdTime
+      || sourceMeter !== meter || barKind != kind else { return }
+    sourceMeter = meter
+    barKind = kind
     bars = Array(repeating: MeterDisplayBallistics(fallRate: fallRate), count: 16)
     holds = Array(repeating: MeterHoldLine(holdTime: holdTime, fallRate: fallRate), count: 16)
     meterHolds = Array(repeating: -.infinity, count: 16)
+    maxima = Array(repeating: -.infinity, count: 16)
+    clips = Array(repeating: 0, count: 16)
     sequence = nil
+    clock = 0
+    lastTime = nil
   }
 
   /// Advances to `time` (seconds) from the snapshot read this frame. Peak
@@ -436,7 +446,7 @@ struct LevelMeterBody: View {
     let source = source, present = present, n = n, scale = scale, spans = spans, reference = reference
     let animator = animator, readouts = readouts, onTick = onTick
     return MeterLayerRepresentable(live: live, palette: palette) { frame, layers, colors in
-      animator.configure(fallRate: source.fallRate, holdTime: source.holdTime)
+      animator.configure(fallRate: source.fallRate, holdTime: source.holdTime, meter: source.meter)
       let s = source.read()
       if present {
         animator.advance(s, channels: n, scale: scale, at: frame.time, animate: source.isLive)

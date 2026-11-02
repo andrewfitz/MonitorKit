@@ -441,7 +441,9 @@ struct KindColumns: View {
       HStack(alignment: .top, spacing: 3) {
         LevelMeterRuler(ticks: scale.ticks, axis: .vertical, inset: 5).frame(width: 26)
         MeterLayerRepresentable(live: present, palette: palette) { frame, layers, colors in
-          animator.configure(fallRate: meter.configuration.peakDecayRate, holdTime: meter.configuration.peakHoldTime)
+          animator.configure(
+            fallRate: meter.configuration.peakDecayRate, holdTime: meter.configuration.peakHoldTime,
+            meter: meter, kind: kind)
           if present {
             animator.advance(meter.snapshot(), channels: n, kind: kind, scale: scale, at: frame.time, animate: true)
           } else {

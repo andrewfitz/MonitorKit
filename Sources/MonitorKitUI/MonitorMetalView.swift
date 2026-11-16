@@ -432,9 +432,12 @@ public final class MonitorMetalView: MonitorPlatformView {
     if changed { onSurfaceStateChange?(surface) }
   }
 
-  private func zoom(by factor: Double, at point: CGPoint) {
-    guard configuration.gesturesEnabled, let (surface, _, p) = surface(at: point) else { return }
+  /// False when there was nothing here to zoom: gestures are off, or no surface is under the point.
+  @discardableResult
+  private func zoom(by factor: Double, at point: CGPoint) -> Bool {
+    guard configuration.gesturesEnabled, let (surface, _, p) = surface(at: point) else { return false }
     edit(surface) { m, layout in MonitorMagnifier.zoom(m, by: factor, about: p, layout: layout) }
+    return true
   }
 
   private func beginDrag(at point: CGPoint) {
@@ -461,7 +464,9 @@ public final class MonitorMetalView: MonitorPlatformView {
 
   /// True when the point was in a navigator inset (the view recentred there).
   private func navigatorClick(at point: CGPoint) -> Bool {
+    // A clean feed draws no navigator, so there is none to click.
     guard configuration.gesturesEnabled, let (surface, layout, p) = surface(at: point),
+      !scene.clean, !surface.state.clean,
       MonitorMagnifier.recenter(Magnification(), navigatorPoint: p, layout: layout) != nil
     else { return false }
     edit(surface) { m, layout in MonitorMagnifier.recenter(m, navigatorPoint: p, layout: layout) }
@@ -531,7 +536,8 @@ public final class MonitorMetalView: MonitorPlatformView {
     private func location(_ event: NSEvent) -> CGPoint { convert(event.locationInWindow, from: nil) }
 
     public override func magnify(with event: NSEvent) {
-      zoom(by: 1 + Double(event.magnification), at: location(event))
+      // An event this view has no use for goes on up the responder chain.
+      if !zoom(by: 1 + Double(event.magnification), at: location(event)) { super.magnify(with: event) }
     }
 
     public override func scrollWheel(with event: NSEvent) {
@@ -539,7 +545,8 @@ public final class MonitorMetalView: MonitorPlatformView {
       guard dy != 0 else { return super.scrollWheel(with: event) }
       // A wheel notch is 10%; a trackpad's continuous deltas are in points.
       let factor = event.hasPreciseScrollingDeltas ? exp(dy * 0.01) : pow(1.1, dy)
-      zoom(by: factor, at: location(event))
+      // Without anything to zoom, an enclosing scroll view still scrolls.
+      if !zoom(by: factor, at: location(event)) { super.scrollWheel(with: event) }
     }
 
     public override func mouseDown(with event: NSEvent) {

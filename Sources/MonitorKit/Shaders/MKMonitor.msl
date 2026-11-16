@@ -778,8 +778,11 @@ float3 mk_present(float3 v, constant mk_PassParams& p) {
 // and the output conversion like the picture. Both come out in target values. `f`
 // is the reading the grey was decoded with, whatever stage the picture shows, so
 // false colour is the same image on every picture stage.
-// Gap greys carry the measured stage's encoding, independently of the main
-// picture and navigator. Hosts with legacy/default parameters keep their path.
+// A gap grey is transformed and decoded as the measured stage, independently of
+// the main picture and navigator, and comes out in target values: `falseColorPipeline.z`
+// is the target transfer, or on a native layer the picture stage's when the measured
+// stage's encoding differs from it (0: the grey is already in target values).
+// Hosts with legacy/default parameters keep their path.
 float3 mk_falseColorPresent(float3 grey, constant mk_FrameParams& f, thread const mk_Inputs& in) {
   constant mk_PassParams& p = in.pass;
   if (p.falseColorPipeline.w == 0) return mk_present(mk_displayTransform(grey, f, in), p);

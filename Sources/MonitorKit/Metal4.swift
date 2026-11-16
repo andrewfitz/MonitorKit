@@ -121,6 +121,10 @@ public final class MonitorResidency: @unchecked Sendable {
     set = try device.makeResidencySet(descriptor: d)
   }
 
+  /// Runs `body` on the set under the lock that guards every other change to it. `body`
+  /// must not call back into this object.
+  func withSet(_ body: (MTLResidencySet) -> Void) { state.withLock { _ in body(set) } }
+
   /// Adds `allocation` and commits. Counted: an allocation added n times leaves
   /// the set after n releases, so a LUT shared by two feeds stays resident.
   public func add(_ allocation: any MTLAllocation) {

@@ -481,4 +481,26 @@ final class ControlTests: XCTestCase {
 
     XCTAssertThrowsError(try AudioMeter(configuration: .init(sampleRate: fs, channelCount: 1, publishInterval: -1)))
   }
+
+  /// AudioMeter.flush publishes pending readings without ending continuous
+  /// loudness audio; its tick grid survives flushes between callback partitions.
+  func testPublicationFlushPreservesPartialLoudnessTick() throws {
+    for interval in [0.0, 0.005] {
+      let meter = try AudioMeter(configuration: .init(
+        sampleRate: 48_000, channelCount: 1, publishInterval: interval))
+      let block = PlanarBlock(channelCount: 1, capacity: 481)
+      meter.process(planar: block.pointers, frameCount: 481)
+      meter.flush()
+      XCTAssertEqual(meter.snapshot().loudness.duration, 481 / 48_000.0, accuracy: 1e-12)
+      XCTAssertEqual(meter.snapshot().frameCount, 481)
+      let sequence = meter.snapshot().sequence
+      meter.flush()
+      XCTAssertEqual(meter.snapshot().sequence, sequence)
+      meter.process(planar: block.pointers, frameCount: 239)
+      meter.flush()
+      XCTAssertEqual(meter.snapshot().loudness.duration, 720 / 48_000.0, accuracy: 1e-12)
+      XCTAssertEqual(meter.snapshot().frameCount, 720)
+    }
+  }
+
 }

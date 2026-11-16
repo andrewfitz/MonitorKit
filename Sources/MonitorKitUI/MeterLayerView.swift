@@ -274,7 +274,14 @@ struct MeterFrame {
   }
 
   /// Draws now, outside a tick.
-  func redraw() { render(MeterFrame(time: CACurrentMediaTime(), size: bounds.size, isTick: false)) }
+  /// A tick is stamped with the link's target time, which is ahead of now. A redraw between
+  /// ticks never goes back before the last tick, or the next tick would count that span twice.
+  func redraw() {
+    render(MeterFrame(time: max(CACurrentMediaTime(), lastTickTime), size: bounds.size, isTick: false))
+  }
+
+  /// The latest tick's time: the floor for a redraw's.
+  private var lastTickTime = 0.0
 
   /// Ticks drawn by every meter in the process.
   static var totalTicks = 0
@@ -283,6 +290,7 @@ struct MeterFrame {
   func step(at time: Double) {
     tickCount += 1
     Self.totalTicks += 1
+    if time.isFinite { lastTickTime = max(lastTickTime, time) }
     render(MeterFrame(time: time, size: bounds.size, isTick: true))
   }
 

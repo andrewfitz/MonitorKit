@@ -380,6 +380,70 @@ final class FalseColorTests: XCTestCase {
     }
   }
 
+  /// A native layer is tagged with the picture stage's encoding, so a gap grey of
+  /// a measured stage in another encoding is converted into it like an overlay
+  /// (linear light, 1 = graphics white): a LUT stage's Rec.709 grey into a PQ or
+  /// HLG layer, and a PQ or HLG source's grey into a LUT picture's Rec.709 layer.
+  /// The same encoding on both stages writes the grey as it is.
+  func testGapGreyOnANativeLayerIsEncodedForThePictureStage() throws {
+    let gpu = try requireGPU()
+    let picture = SyntheticFrame.neutral(.v210, width: 6, height: 2) { _, _ in 420 }
+    let feed = gpu.engine.makeFeed()
+    feed.burnInLUT = try Fixtures.constantLUT(gpu, 0.5)
+    var state = MonitorState()
+    state.falseColor.mode = .custom
+    state.falseColor.customUnit = .ire
+    state.falseColor.customBands = [FalseColorBand(lower: 90, upper: 100, color: ColorRGB(r: 1, g: 0, b: 0))]
+    let identity: [SIMD4<Float>] = [SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0)]
+    for transfer in [DisplayTransfer.pq, .hlg] {
+      let signal = SignalDescription(range: .legal, matrix: .bt2020, encoding: .display(transfer))
+      let frame = try picture.frame(gpu, signal: signal)
+      let pass = gpu.engine.makePass()
+      for measured in [SignalStage.source, .output] {
+        state.falseColor.stage = measured
+        let from = MonitorColorPipeline(output: .signalNative, signal: signal, monitorStageHasLUT: measured != .source)
+        let value = measured == .source ? (420.0 - 64) / 876 : 0.5
+        let grey = ColorRGB(r: value, g: value, b: value)
+        for shown in SignalStage.allCases {
+          state.pictureStage = shown
+          let to = MonitorColorPipeline(output: .signalNative, signal: signal, monitorStageHasLUT: shown != .source)
+          let what = "\(transfer), measured \(measured), picture \(shown)"
+          let out = try gpu.render(frame, state: state, feed: feed, pass: pass)
+          let p = pass.currentParameters
+          let matrix = [p.falseColorToTarget[0], p.falseColorToTarget[1], p.falseColorToTarget[2]]
+          let expected: ColorRGB
+          if from.picture == to.picture {
+            expected = grey
+            XCTAssertEqual(p.falseColorPipeline.z, 0, what)
+            XCTAssertEqual(matrix, identity, what)
+          } else {
+            let light = from.picture.primaries.conversion(to: to.picture.primaries).apply(
+              from.linear(grey, transfer: from.picture.transfer, primaries: from.picture.primaries))
+            expected = to.encode(light, transfer: to.picture.transfer, primaries: to.picture.primaries)
+            XCTAssertEqual(p.falseColorPipeline.z, to.picture.transfer.rawValue, what)
+            XCTAssertNotEqual(matrix, identity, what)
+            XCTAssertGreaterThan(abs(expected.g - value), 0.02, "\(what): the conversion moves the grey")
+          }
+          XCTAssertEqual(p.falseColorPipeline.y, from.picture.transfer.rawValue, what)
+          let rgb = out.rgb(0, 0)
+          XCTAssertEqual(Double(rgb.x), expected.r, accuracy: 5e-5, what)
+          XCTAssertEqual(Double(rgb.y), expected.g, accuracy: 5e-5, what)
+          XCTAssertEqual(Double(rgb.z), expected.b, accuracy: 5e-5, what)
+        }
+      }
+    }
+    // BT.1886 and sRGB on Rec.709 primaries are one class on a native layer (overlay
+    // and band colours stay as authored on both), so a LUT stage's grey does too.
+    let sRGB = SignalDescription(range: .legal, encoding: .display(.sRGB))
+    let frame = try picture.frame(gpu, signal: sRGB)
+    let pass = gpu.engine.makePass()
+    state.falseColor.stage = .output
+    state.pictureStage = .source
+    let out = try gpu.render(frame, state: state, feed: feed, pass: pass)
+    XCTAssertEqual(pass.currentParameters.falseColorPipeline.z, 0)
+    XCTAssertEqual(Double(out.rgb(0, 0).y), 0.5, accuracy: 5e-5)
+  }
+
   func testUnavailableModesReportWhyAndStillDrawThePicture() throws {
     let gpu = try requireGPU()
     let cases: [(FalseColorMode, SignalEncoding, MonitorUnavailableReason)] = [

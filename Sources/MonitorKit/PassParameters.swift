@@ -96,8 +96,12 @@ public struct PassParameters: Sendable {
   /// OOTF's); w: k1·L / 100, eq. (5)'s linear segment. BT.2100's by default.
   public var sourceWeights = Self.sourceWeights(.rec2020)
 
-  /// The false-colour gap grey belongs to the measured stage, independently of
-  /// the picture/navigator stage. w enables this metadata for library passes.
+  /// The false-colour gap grey is transformed and decoded as the measured stage,
+  /// independently of the picture/navigator stage, and written in target values.
+  /// x: transform, y: the measured stage's picture transfer, z: the transfer it is
+  /// encoded into (the target's, or on a native layer the picture stage's when the
+  /// measured stage's encoding differs; 0: written as it is), w enables this
+  /// metadata for library passes.
   public var falseColorPipeline = SIMD4<UInt32>.zero
   public var falseColorFlags = SIMD4<UInt32>.zero
   public var falseColorToneMap = SIMD4<Float>(1, 1, 1, 1)

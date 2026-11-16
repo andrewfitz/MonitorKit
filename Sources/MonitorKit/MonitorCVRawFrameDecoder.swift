@@ -108,9 +108,12 @@ public final class MonitorCVRawFrameDecoder {
       throw MonitorKitError.gpu("Raw monitor GPU staging allocation or encoder unavailable.")
     }
     residency.observe(submission)
-    residency.set.addAllocation(input)
-    for source in sources { residency.set.addAllocation(source) }
-    residency.set.commit()
+    // Under the residency's lock: a completion on another thread removes from the same set.
+    residency.withSet { set in
+      set.addAllocation(input)
+      for source in sources { set.addAllocation(source) }
+      set.commit()
+    }
     for (plane, source) in sources.enumerated() {
       copy.copy(sourceTexture: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
         sourceSize: MTLSize(width: source.width, height: source.height, depth: 1), destinationBuffer: input,
@@ -119,17 +122,24 @@ public final class MonitorCVRawFrameDecoder {
     copy.endEncoding()
     // Alpha storage remains retained and validated even though v1 ignores it.
     if format == .uyva { offsets.removeLast(); strides.removeLast() }
-    let encoded: MonitorRawFrameDecoder.Encoding
-    do {
-      encoded = try decoder.encode(input: input, format: format, width: width, height: height,
-        offsets: offsets, strides: strides, signal: signal, commandBuffer: submission.commandBuffer, residency: residency.set)
-    } catch {
+    var made: MonitorRawFrameDecoder.Encoding?
+    var failure: (any Error)?
+    // The decoder adds its own allocations to the set, so its encode holds the lock too.
+    residency.withSet { set in
+      do {
+        made = try decoder.encode(input: input, format: format, width: width, height: height,
+          offsets: offsets, strides: strides, signal: signal, commandBuffer: submission.commandBuffer, residency: set)
+        set.commit()
+      } catch {
+        failure = error
+      }
+    }
+    guard let encoded = made else {
       residency.retire(image, resident: nil)
       residency.retire(input, resident: input)
       for source in sources { residency.retire(source, resident: source) }
-      throw error
+      throw failure ?? MonitorKitError.gpu("Raw monitor decode failed.")
     }
-    residency.set.commit()
     let owner = Ownership(image: image, encoded: encoded, sources: sources, residency: residency)
     let g = geometry ?? MonitorFrame.geometry(of: image)
     return try MonitorFrame(layout: encoded.frame.layout, width: width, height: height,

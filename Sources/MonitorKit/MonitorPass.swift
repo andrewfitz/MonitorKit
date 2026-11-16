@@ -956,6 +956,19 @@ public final class MonitorPass {
     p.falseColorWeights = color(fallback.picture.primaries.luminanceCoefficients, 0)
     p.falseColorToTarget = rows(fallback.pictureToTarget)
     p.falseColorTransform = rows(fallback.transformMatrix)
+    // A native layer carries the picture stage's encoding (its tag, and the band and
+    // overlay colours). A measured stage in another one (a LUT on only one of the two
+    // stages of a PQ, HLG or wide-gamut signal) has its grey converted into it, like
+    // an overlay: linear light with 1 = graphics white, the primaries, the picture's
+    // transfer. BT.1886 and sRGB on Rec.709 primaries are one class there, as for
+    // overlays (`MonitorColorPipeline.overlay`), and stay as they are.
+    func sdrRec709(_ e: MonitorColorPipeline.Encoded) -> Bool {
+      e.primaries == .rec709 && (e.transfer == .bt1886 || e.transfer == .sRGB)
+    }
+    if o.target == nil, fallback.picture != o.picture, !(sdrRec709(fallback.picture) && sdrRec709(o.picture)) {
+      p.falseColorPipeline.z = o.picture.transfer.rawValue
+      p.falseColorToTarget = rows(fallback.picture.primaries.conversion(to: o.picture.primaries))
+    }
     return p
   }
 

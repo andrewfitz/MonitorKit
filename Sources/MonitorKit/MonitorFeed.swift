@@ -335,15 +335,24 @@ public final class MonitorFeed {
     if second != nil && source1 == nil { throw MonitorKitError.invalidFrame("a frame plane is missing") }
     let pipeline0 = try engine.copyPipeline(integer: first.integer)
     let pipeline1 = try second.map { try engine.copyPipeline(integer: $0.integer) }
-    if second == nil { replaceFreezePlane(1, with: nil) }
     let before = (freezePlanes.0, freezePlanes.1)
     // A host may construct a different frame over one of our frozen planes.
     // Allocate a new destination set rather than bind a source for simultaneous
     // read and write, or overwrite a plane a held frozen frame still owns.
     let aliases = before.0 === source0 || (source1 != nil && before.0 === source1)
       || (before.1 != nil && (before.1 === source0 || (source1 != nil && before.1 === source1)))
-    let a = try plane(0, first, source: source0, reuse: !aliases)
-    let b = try second.map { try plane(1, $0, source: source1, reuse: !aliases) }
+    // Allocate both destinations before publishing either one.  A failure while
+    // making the second plane must leave the currently frozen pair intact; the
+    // copy encoder is opened only after this method returns, so callers can retry
+    // without a half-replaced pair.
+    let a = try plane(0, first, source: source0, reuse: !aliases, publish: false)
+    let b = try second.map { try plane(1, $0, source: source1, reuse: !aliases, publish: false) }
+    if before.0 !== a { replaceFreezePlane(0, with: a) }
+    if let b {
+      if before.1 !== b { replaceFreezePlane(1, with: b) }
+    } else {
+      replaceFreezePlane(1, with: nil)
+    }
     let reused = (before.0 != nil && before.0 === a) || (b != nil && before.1 === b)
     return Freeze(planes: (a, b), sources: (source0, source1), pipelines: (pipeline0, pipeline1), reused: reused)
   }
@@ -420,7 +429,9 @@ public final class MonitorFeed {
     }
   }
 
-  private func plane(_ index: Int, _ shape: PlaneShape, source: MTLTexture?, reuse: Bool = true) throws -> MTLTexture {
+  private func plane(
+    _ index: Int, _ shape: PlaneShape, source: MTLTexture?, reuse: Bool = true, publish: Bool = true
+  ) throws -> MTLTexture {
     let existing = index == 0 ? freezePlanes.0 : freezePlanes.1
     if reuse, let existing, existing.pixelFormat == shape.format, existing.width == shape.width,
       existing.height == shape.height
@@ -431,7 +442,7 @@ public final class MonitorFeed {
     let t = try engine.makeTexture(
       shape.format, width: shape.width, height: shape.height, usage: [.shaderRead, .shaderWrite],
       label: "MonitorKit freeze plane \(index)")
-    replaceFreezePlane(index, with: t)
+    if publish { replaceFreezePlane(index, with: t) }
     return t
   }
 

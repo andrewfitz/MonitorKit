@@ -399,7 +399,7 @@ public struct AudioMeterConfiguration: Sendable, Equatable {
     let release = pow(10, -ppm.returnRate / (20 * stepRate))
     let fastCharge = 1 - exp(-1 / (ppm.fastTimeConstant * Double(ppmInput.lanes) * stepRate))
     let slowCharge = 1 - exp(-1 / (ppm.slowTimeConstant * Double(ppmInput.lanes) * stepRate))
-    guard fastCharge > 0, slowCharge > 0,
+    guard release < 1, fastCharge > 0, slowCharge > 0,
       Float(pow(release, -Double(PPMCoefficients.segment))).isFinite
     else { throw .invalidParameter("ppm ballistics") }
     let coefficients = PPMCoefficients(ppm, sampleRate: sampleRate, input: ppmInput)

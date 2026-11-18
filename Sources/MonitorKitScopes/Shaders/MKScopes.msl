@@ -537,8 +537,13 @@ kernel void mk_scopeFused(texture2d<uint, access::read> packed [[texture(0)]],
   uint runs = (th + MK_FUSED_RUN - 1) / MK_FUSED_RUN, items = tw * runs;
   mk_ScopeStats s = mk_statsInit();
   uint current = 0xFFFFFFFFu, count = 0;
+  // Advance the same column-major work-item coordinates without dividing for
+  // every item. Empty edge tiles still use a nonzero divisor before the loop.
+  uint divisor = max(runs, 1u);
+  uint x = x0 + tid / divisor, r = tid % divisor;
+  uint dx = threads / divisor, dr = threads % divisor;
   for (uint i = tid; i < items; i += threads) {
-    uint x = x0 + i / runs, ys = y0 + (i % runs) * MK_FUSED_RUN, ye = min(ys + MK_FUSED_RUN, y1);
+    uint ys = y0 + r * MK_FUSED_RUN, ye = min(ys + MK_FUSED_RUN, y1);
     uint column = mk_fuseWaveform ? mk_waveformColumn(x, C, fw, wp.level.z) - c0 : 0;
     for (uint y = ys; y < ye; y++) {
       mk_ScopeSample sample = MK_SCOPE_SAMPLE(uint2(x, y));
@@ -563,6 +568,9 @@ kernel void mk_scopeFused(texture2d<uint, access::read> packed [[texture(0)]],
         }
       }
     }
+    x += dx;
+    r += dr;
+    if (r >= runs) { r -= runs; x++; }
   }
   if (mk_fuseVector && count && current < 0xFFFFFFFEu) mk_addDevice(vbins, current, count);
   threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -659,13 +667,13 @@ inline uint mk_frameColumns(uint c, uint columns, uint frameWidth) {
   return ((c + 1) * frameWidth + columns - 1) / columns - (c * frameWidth + columns - 1) / columns;
 }
 
-// The trace of one source texel: intensity per channel before brightness, or
+// One source texel: density per channel before the intensity curve, or
 // the histogram height (0…1 of the panel). A frame narrower than the waveform
 // leaves some scope columns empty; then the source has one texel column per
 // frame column, read from the scope column that frame column was binned into,
 // so empty columns are never drawn.
 // Channels k0 up to k1 are computed; the others are 0.
-inline float4 mk_traceTexel(constant mk_ScopeResolve& r, device const uint* bins, float peak, uint2 xy, uint k0,
+inline float4 mk_traceDensity(constant mk_ScopeResolve& r, device const uint* bins, float peak, uint2 xy, uint k0,
                             uint k1) {
   uint columns = r.bins.x, rows = r.bins.y;
   float4 v = float4(0);
@@ -688,7 +696,7 @@ inline float4 mk_traceTexel(constant mk_ScopeResolve& r, device const uint* bins
   bool packed = r.shape.z != 0;
   for (uint k = k0; k < k1; k++) {
     float count = float(mk_binCount(bins, (k * rows + xy.y) * columns + column, packed));
-    v[k] = mk_scopeIntensity(count * weight * r.intensity.x, uint(r.intensity.y));
+    v[k] = count * weight * r.intensity.x;
   }
   return v;
 }
@@ -731,13 +739,18 @@ kernel void mk_scopeResolve(constant mk_ScopeResolve& r [[buffer(0)]], device co
       if (gid.x >= P) continue;
       uint2 rx = mk_footprint(gid.x, P, n.x, centred);
       for (uint y = ry.x; y < ry.y; y++)
-        for (uint x = rx.x; x < rx.y; x++) v[k] = max(v[k], mk_traceTexel(r, bins, peak, uint2(x, y), k, k + 1)[k]);
+        for (uint x = rx.x; x < rx.y; x++) v[k] = max(v[k], mk_traceDensity(r, bins, peak, uint2(x, y), k, k + 1)[k]);
     }
   } else {
     uint2 rx = W != 0 ? mk_footprint(gid.x, W, n.x, centred) : uint2(gid.x, gid.x + 1);
     for (uint y = ry.x; y < ry.y; y++)
-      for (uint x = rx.x; x < rx.y; x++) v = max(v, mk_traceTexel(r, bins, peak, uint2(x, y), 0, r.shape.y));
+      for (uint x = rx.x; x < rx.y; x++) v = max(v, mk_traceDensity(r, bins, peak, uint2(x, y), 0, r.shape.y));
   }
+  // Both curves are monotone for these nonnegative densities. Reduce first
+  // so minification evaluates log/pow once per output channel, retaining each
+  // waveform column's normalization and its original multiplication order.
+  if (r.shape.x != MK_SCOPE_HISTOGRAM)
+    for (uint k = 0; k < r.shape.y; k++) v[k] = mk_scopeIntensity(v[k], uint(r.intensity.y));
   trace.write(v, gid);
 }
 

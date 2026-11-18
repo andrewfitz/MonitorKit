@@ -256,14 +256,26 @@ public final class MonitorTextureCache: @unchecked Sendable {
       (packed, first) = try entry(
         iosurface: surface, plane: 0, format: .rgba8Uint, width: (width + 1) / 2, height: height, owner: owner, now: t)
     case .biplanar(_, let depth):
-      (luma, first) = try entry(
-        iosurface: surface, plane: 0, format: depth == 8 ? .r8Unorm : .r16Unorm,
-        width: CVPixelBufferGetWidthOfPlane(pixelBuffer, 0), height: CVPixelBufferGetHeightOfPlane(pixelBuffer, 0),
-        owner: owner, now: t)
-      (chroma, second) = try entry(
-        iosurface: surface, plane: 1, format: depth == 8 ? .rg8Unorm : .rg16Unorm,
-        width: CVPixelBufferGetWidthOfPlane(pixelBuffer, 1), height: CVPixelBufferGetHeightOfPlane(pixelBuffer, 1),
-        owner: owner, now: t)
+      let id = IOSurfaceGetID(surface)
+      let lumaFormat: MTLPixelFormat = depth == 8 ? .r8Unorm : .r16Unorm
+      let chromaFormat: MTLPixelFormat = depth == 8 ? .rg8Unorm : .rg16Unorm
+      let lumaKey = Key(
+        surface: id, plane: 0, format: lumaFormat.rawValue,
+        width: CVPixelBufferGetWidthOfPlane(pixelBuffer, 0), height: CVPixelBufferGetHeightOfPlane(pixelBuffer, 0))
+      let chromaKey = Key(
+        surface: id, plane: 1, format: chromaFormat.rawValue,
+        width: CVPixelBufferGetWidthOfPlane(pixelBuffer, 1), height: CVPixelBufferGetHeightOfPlane(pixelBuffer, 1))
+      if let pair = lookupPair(lumaKey, chromaKey, surface, owner: owner, now: t) {
+        (luma, first) = pair.0
+        (chroma, second) = pair.1
+      } else {
+        (luma, first) = try entry(
+          iosurface: surface, plane: 0, format: lumaFormat,
+          width: lumaKey.width, height: lumaKey.height, owner: owner, now: t)
+        (chroma, second) = try entry(
+          iosurface: surface, plane: 1, format: chromaFormat,
+          width: chromaKey.width, height: chromaKey.height, owner: owner, now: t)
+      }
     case .rgb(let depth, let float):
       let format: MTLPixelFormat =
         float
@@ -322,6 +334,34 @@ public final class MonitorTextureCache: @unchecked Sendable {
   }
 
   // MARK: - Internals
+
+  /// Both planes of a cached biplanar frame under one lock. New pairs are
+  /// adjacent; a sweep's swap-removal can separate them, so check the full key
+  /// and fall back to a scan. Touch both before a due sweep releases idle entries.
+  private func lookupPair(_ first: Key, _ second: Key, _ surface: IOSurfaceRef, owner: UInt64, now: Double)
+    -> ((MTLTexture, FrozenPlanes), (MTLTexture, FrozenPlanes))?
+  {
+    let interval = sweepInterval, life = idleLifetime
+    var due = false
+    let hit = locked { s -> ((MTLTexture, FrozenPlanes), (MTLTexture, FrozenPlanes))? in
+      due = now - s.lastSweep >= interval && Self.hasIdle(s, now: now, life: life)
+      if !due && now - s.lastSweep >= interval { s.lastSweep = now }
+      guard let a = Self.index(of: first, in: s.entries), Self.same(s.entries[a].surface, surface) else { return nil }
+      let adjacent = a + 1
+      let b = adjacent < s.entries.count && s.entries[adjacent].key == second
+        ? adjacent : Self.index(of: second, in: s.entries)
+      guard let b, Self.same(s.entries[b].surface, surface) else { return nil }
+      s.entries[a].lastUse = now
+      s.entries[b].lastUse = now
+      if s.entries[a].owner != owner { s.entries[a].owner = owner }
+      if s.entries[b].owner != owner { s.entries[b].owner = owner }
+      return ((s.entries[a].texture, s.entries[a].token), (s.entries[b].texture, s.entries[b].token))
+    }
+    // A partial miss falls through to entry(), whose lookup touches that plane
+    // before sweeping; do not discard it before the ordinary path can reuse it.
+    if due, hit != nil { sweep(now: now) }
+    return hit
+  }
 
   /// The cached texture for `key` over `surface`, touched; sweeps when due. The
   /// steady-state path: one lock, a scan of a few entries, no allocation.

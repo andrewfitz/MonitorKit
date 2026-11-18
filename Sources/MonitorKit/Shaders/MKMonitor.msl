@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // MonitorKit picture pass. Compiled after MKLUT.msl and MKDecode.msl.
+#ifndef MK_MONITOR_MSL
+#define MK_MONITOR_MSL
 #include <metal_stdlib>
 using namespace metal;
 
@@ -1293,3 +1295,5 @@ kernel void mk_focusMask(texture2d<uint, access::read> packed [[texture(0)]],
     right = belowRight;
   }
 }
+
+#endif

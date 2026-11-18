@@ -111,6 +111,9 @@ final class ScopeLifetimeTests: XCTestCase {
     let group = try engine.makeGroup(accumulators)
     let renderers = accumulators.map { _ in engine.makeRenderer() }
     let target = try makeTarget(width: 900, height: 600, shared: false)
+    // Unretained buffers require the host to own every input, destination,
+    // and scope until the last completion, including after the final encode.
+    defer { withExtendedLifetime((frame, target, accumulators, group, renderers)) {} }
     var inFlight: [MTLCommandBuffer] = []
     for i in 0..<36 {
       if inFlight.count == 3 {

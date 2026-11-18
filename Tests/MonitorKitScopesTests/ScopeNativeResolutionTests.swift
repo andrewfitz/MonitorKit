@@ -66,4 +66,19 @@ final class ScopeNativeResolutionTests: XCTestCase {
     XCTAssertEqual(ScopeSettings(kind: .waveform).atNativeResolution(viewportWidth: 0, viewportHeight: -3),
       ScopeSettings(kind: .waveform).atNativeResolution(viewportWidth: 1, viewportHeight: 1), "Degenerate sizes clamp")
   }
+
+  func testExtremeViewportDimensionsSaturateBeforeRounding() {
+    for kind in ScopeKind.allCases {
+      for mode in WaveformMode.allCases {
+        var s = ScopeSettings(kind: kind)
+        s.waveformMode = mode
+        XCTAssertEqual(
+          s.atNativeResolution(viewportWidth: Int.max, viewportHeight: Int.max),
+          s.atNativeResolution(viewportWidth: 4096, viewportHeight: 2048))
+        XCTAssertEqual(
+          s.atNativeResolution(viewportWidth: Int.min, viewportHeight: Int.min),
+          s.atNativeResolution(viewportWidth: 1, viewportHeight: 1))
+      }
+    }
+  }
 }

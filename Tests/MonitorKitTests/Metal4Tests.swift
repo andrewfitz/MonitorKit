@@ -180,6 +180,20 @@ final class Metal4Tests: XCTestCase {
     XCTAssertEqual(pass.status, classicPass.status, c.name, file: file, line: line)
   }
 
+  func testAbandonedSubmissionIndicesCanDrain() throws {
+    enum Expected: Error { case stopped }
+    let host = try TestMTL4()
+    var pending: TestMTL4.Pending? = host.begin()
+    let index = try XCTUnwrap(pending?.submission.index)
+    XCTAssertThrowsError(try host.run { _ in throw Expected.stopped })
+    try host.run { _ in }
+    XCTAssertLessThan(host.completedIndex, index)
+    pending = nil
+    // Check progress before calling drain, so a regression fails without hanging the suite.
+    guard host.completedIndex == index + 2 else { return XCTFail("Abandoned submission held back GPU feedback") }
+    host.drain()
+  }
+
   func testMetal4RenderMatchesClassicBitForBit() throws {
     let m = try requireMTL4()
     for c in try cases(m) { try compare(c, m) }

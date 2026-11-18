@@ -354,6 +354,11 @@ final class LoudnessTests: XCTestCase {
     XCTAssertThrowsError(try LoudnessMeter(sampleRate: 1000, channelCount: 2))
     XCTAssertThrowsError(try LoudnessMeter(sampleRate: 48000, channelCount: 0))
     XCTAssertThrowsError(try LoudnessMeter(sampleRate: 48000, channelCount: 17))
+    for count in [Int.min, Int.max] {
+      XCTAssertThrowsError(try LoudnessMeter(sampleRate: 48000, channelCount: count)) {
+        XCTAssertEqual($0 as? AudioMeterError, .unsupportedChannelCount(count))
+      }
+    }
     XCTAssertThrowsError(try LoudnessMeter(sampleRate: 48000, channels: [.weighted(-1)]))
     XCTAssertThrowsError(
       try AudioMeter(configuration: .init(sampleRate: 48000, channelCount: 2, loudnessChannels: [.left])))

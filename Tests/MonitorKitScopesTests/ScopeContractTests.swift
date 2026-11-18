@@ -112,6 +112,8 @@ final class ScopeContractTests: XCTestCase {
       try engine.makeAccumulator(settings: $0)
     }
     let renderers = scopes.map { _ in engine.makeRenderer() }
+    // Measure with identical live GPU resources on both sides of the window.
+    defer { withExtendedLifetime((frame, target, scopes, renderers)) {} }
     func cycle() throws {
       try autoreleasepool {
         let cb = try XCTUnwrap(queue.makeCommandBuffer())
@@ -225,6 +227,14 @@ final class ScopeContractTests: XCTestCase {
       let viewport = MonitorViewport(width: 512, height: 256)
       var accumulate: [Int] = [], control: [Int] = [], prepare: [Int] = [], draw: [Int] = []
       var resolves: [Int] = [], resolveControls: [Int] = []
+      var passInputs = try accumulator.begin(frame.frame, burnInLUT: nil, monitorLUT: nil)
+      let kernel = try XCTUnwrap(try accumulator.kernelPipeline(passInputs))
+      var maintenance = ScopeMaintenanceParameters()
+      accumulator.addMember(passInputs, to: &maintenance, at: 0)
+      let clear = ScopeAccumulator.clearDispatch(maintenance, pipeline: engine.clearPipeline)
+      let kernelGrid = accumulator.kernelDispatch(passInputs, pipeline: kernel, frame: frame.frame)
+      let finalize = ScopeAccumulator.finalizeDispatch(pipeline: engine.finalizePipeline)
+      var lut = LUTParameters.disabled
       for i in 0..<40 {
         try autoreleasepool {
           let cb = try XCTUnwrap(queue.makeCommandBuffer())
@@ -232,31 +242,42 @@ final class ScopeContractTests: XCTestCase {
           guard let a = try AllocationCounter.measure({
             try accumulator.accumulate(frame.frame, burnInLUT: nil, monitorLUT: nil, using: compute)
           }) else { throw XCTSkip("malloc_logger is unavailable") }
-          // The host making the same calls itself.
-          var bytes = [UInt8](repeating: 0, count: 256)
-          let c = AllocationCounter.measure {
-            bytes.withUnsafeMutableBytes { raw in
-              let p = raw.baseAddress!
-              compute.setTexture(frame.frame.packed, index: 0)
-              compute.setTexture(engine.placeholderPlane, index: 1)
-              compute.setTexture(engine.placeholderPlane, index: 2)
-              compute.setTexture(engine.placeholderLUT, index: 3)
-              compute.setTexture(engine.placeholderLUT, index: 4)
-              compute.setBytes(p, length: 80, index: 0)
-              compute.setBytes(p, length: 64, index: 1)
-              compute.setBytes(p, length: 64, index: 2)
-              compute.setBytes(p, length: 128, index: 3)
-              compute.setBuffer(accumulator.bins, offset: 0, index: 4)
-              compute.setBuffer(accumulator.statisticsBuffer, offset: 0, index: 5)
-              for pipeline in [engine.clearPipeline, engine.clearPipeline, engine.finalizePipeline] {
-                compute.setComputePipelineState(pipeline)
-                compute.setThreadgroupMemoryLength(0, index: 0)
-                compute.dispatchThreadgroups(
-                  MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
-              }
-            }
-          }!
           compute.endEncoding()
+          // Measure the same dispatches on a fresh command buffer. Reusing
+          // the measured encoder would reuse Metal's resource-binding records.
+          let controlBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+          let inline = try XCTUnwrap(controlBuffer.makeComputeCommandEncoder())
+          let c = AllocationCounter.measure {
+            inline.setTexture(frame.frame.packed, index: 0)
+            inline.setTexture(engine.placeholderPlane, index: 1)
+            inline.setTexture(engine.placeholderPlane, index: 2)
+            inline.setTexture(engine.placeholderLUT, index: 3)
+            inline.setTexture(engine.placeholderLUT, index: 4)
+            inline.setBytes(&passInputs.frame, length: MemoryLayout<FrameParameters>.stride, index: 0)
+            inline.setBytes(&lut, length: MemoryLayout<LUTParameters>.stride, index: 1)
+            inline.setBytes(&lut, length: MemoryLayout<LUTParameters>.stride, index: 2)
+            inline.setBuffer(accumulator.bins, offset: 0, index: 4)
+            inline.setBuffer(accumulator.statisticsBuffer, offset: 0, index: 5)
+            inline.setBytes(&maintenance, length: MemoryLayout<ScopeMaintenanceParameters>.stride, index: 3)
+            inline.setComputePipelineState(engine.clearPipeline)
+            inline.dispatchThreads(clear.grid, threadsPerThreadgroup: clear.group)
+            inline.setBytes(&passInputs.params, length: MemoryLayout<ScopeKernelParameters>.stride, index: 3)
+            inline.setComputePipelineState(kernel)
+            if kernelGrid.threadgroupBytes > 0 { inline.setThreadgroupMemoryLength(kernelGrid.threadgroupBytes, index: 0) }
+            if kernelGrid.byThreadgroups {
+              inline.dispatchThreadgroups(kernelGrid.grid, threadsPerThreadgroup: kernelGrid.group)
+            } else {
+              inline.dispatchThreads(kernelGrid.grid, threadsPerThreadgroup: kernelGrid.group)
+            }
+            inline.setBytes(&maintenance, length: MemoryLayout<ScopeMaintenanceParameters>.stride, index: 3)
+            inline.setComputePipelineState(engine.finalizePipeline)
+            inline.dispatchThreadgroups(finalize.grid, threadsPerThreadgroup: finalize.group)
+          }!
+          inline.endEncoding()
+          controlBuffer.commit()
+          controlBuffer.waitUntilCompleted()
+          XCTAssertNil(controlBuffer.error)
+          var bytes = [UInt8](repeating: 0, count: 256)
           // The control encodes first: Metal allocates once in whichever
           // compute encoder follows the ended one (measured either way round).
           let resolveControl = AllocationCounter.measure {

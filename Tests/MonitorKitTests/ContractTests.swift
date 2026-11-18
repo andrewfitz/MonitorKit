@@ -57,6 +57,13 @@ final class ContractTests: XCTestCase {
     return (frame, feed, gpu.engine.makePass(), state, gpu.target(192, 108, format: .bgra8Unorm))
   }
 
+  func testRepeatedShaderPartsCompileInHostLibrary() throws {
+    let gpu = try requireGPU()
+    let parts: [MonitorShaders.Part] = [.lut, .decode, .monitor]
+    let library = try MonitorShaders.makeLibrary(device: gpu.device, parts: parts + parts)
+    XCTAssertNotNil(library.makeFunction(name: "mk_fullscreen"))
+  }
+
   func testEncodeNeverCommitsWaitsOrAddsHandlers() throws {
     let gpu = try requireGPU()
     let (frame, feed, pass, state, target) = try setUp(gpu)

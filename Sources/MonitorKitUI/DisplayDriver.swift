@@ -143,6 +143,9 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
   /// buffer held back from Metal's reuse.
   private(set) var probe: MTLCommandBuffer?
   private var probeEncode: UInt64 = 0
+  /// Every own-queue buffer until terminal status: a later successful scope
+  /// buffer does not establish that its preceding picture buffer succeeded.
+  private var pendingCommands: [MTLCommandBuffer] = []
   /// The probe is an idle marker, whose completion handler releases again.
   private var probeIsMarker = false
   /// The last encode a completed probe vouched for.
@@ -201,6 +204,7 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
       hostEncode = encode
     }
     super.init()
+    pendingCommands.reserveCapacity(max(8, renderer.engine.framesInFlight * 2))
     completion.driver = self
   }
 
@@ -270,9 +274,11 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
     // An explicit offscreen draw is allowed while paused. It creates new GPU
     // work after the transition to idle, so arrange its completion release too.
     if drawable == nil, isIdle { releaseIdle() }
-    guard changes.status || changes.graticule || changes.error != nil, let notify else { return }
-    let status = changes.status, graticule = changes.graticule
-    let error = changes.error
+    report(status: changes.status, graticule: changes.graticule, error: changes.error)
+  }
+
+  private func report(status: Bool, graticule: Bool, error: (any Error)?) {
+    guard status || graticule || error != nil, let notify else { return }
     if Thread.isMainThread {
       MainActor.assumeIsolated { notify(status, graticule, error) }
     } else {
@@ -290,7 +296,7 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
   func releaseIdle() {
     lock.lock()
     noteHostCompletion()
-    _ = noteCompletion()
+    let error = noteCompletion()
     if isIdle, let queue, !probeIsMarker, renderer.encodeCount > vouched, let marker = queue.makeCommandBuffer() {
       // An empty buffer after the last frame: once it completes, every encode has.
       marker.label = "MonitorKitUI idle marker"
@@ -305,6 +311,7 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
     }
     if isIdle { renderer.releaseIdleResources() }
     lock.unlock()
+    if let error { report(status: false, graticule: false, error: error) }
   }
 
   /// What the host reported finished, to the renderer.
@@ -322,10 +329,11 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
   /// an intentionally ignored error into a warnings-as-errors failure.
   @discardableResult
   private func noteCompletion() -> (any Error)? {
-    guard let cb = probe else { return nil }
+    let failure = checkCommandBuffers()
+    guard let cb = probe else { return failure }
     let status = cb.status
-    guard status == .completed || status == .error else { return nil }
-    let commandError = status == .error ? cb.error : nil
+    guard status == .completed || status == .error else { return failure }
+    let commandError = failure ?? (status == .error ? cb.error : nil)
     probe = nil
     probeIsMarker = false
     vouched = probeEncode
@@ -342,6 +350,31 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
     return commandError
   }
 
+  func trackCommitted(_ commandBuffer: MTLCommandBuffer) {
+    pendingCommands.append(commandBuffer)
+  }
+
+  /// The status reader also lets tests exercise independent buffer failures
+  /// without deliberately faulting the GPU. Called under the driver's lock.
+  @discardableResult
+  func checkCommandBuffers(
+    status: (MTLCommandBuffer) -> MTLCommandBufferStatus = { $0.status }
+  ) -> (any Error)? {
+    var failure: (any Error)?
+    var i = 0
+    while i < pendingCommands.count {
+      let commandBuffer = pendingCommands[i]
+      let state = status(commandBuffer)
+      guard state == .completed || state == .error else { i += 1; continue }
+      if state == .error {
+        renderer.invalidateGPUResults()
+        if failure == nil { failure = commandBuffer.error }
+      }
+      pendingCommands.remove(at: i)
+    }
+    return failure
+  }
+
   /// The tick's work under `lock`; returns whether a status or a graticule changed.
   private func locked(
     drawable: (any CAMetalDrawable)?, texture: MTLTexture, timestamp: CFTimeInterval,
@@ -352,7 +385,6 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
     noteHostCompletion()
     let commandError = noteCompletion()
     do { try renderer.update() } catch { return (false, false, error) }
-    if let commandError { return (false, false, commandError) }
     let wanted = override.withLock { $0 } ?? renderer.layerColor
     if appliedLayerColor != wanted {
       applyLayerColor(wanted)
@@ -361,7 +393,7 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
       if drawable != nil {
         skips.add(1, ordering: .relaxed)
         renderer.setNeedsDisplay()
-        return (false, false, nil)
+        return (false, false, commandError)
       }
     }
     let needs = renderer.needsDisplay(width: texture.width, height: texture.height, pixelFormat: texture.pixelFormat)
@@ -376,7 +408,7 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
     } else {
       skips.add(1, ordering: .relaxed)
     }
-    return (renderer.takeStatusChanges(), renderer.takeGraticuleChanges(), nil)
+    return (renderer.takeStatusChanges(), renderer.takeGraticuleChanges(), commandError)
   }
 
   /// A drawable on the view's own queue: the pictures in one command buffer,
@@ -411,11 +443,13 @@ final class MonitorDisplayDriver: NSObject, CAMetalDisplayLinkDelegate, @uncheck
       drew = false
     }
     cb.commit()
+    trackCommitted(cb)
     var last = cb
     lastScopeBuffer = nil
     if drawable != nil, renderer.scopesDue, let scopes = queue.makeCommandBuffer() {
       renderer.encodeScopes(into: scopes)
       scopes.commit()
+      trackCommitted(scopes)
       last = scopes
       lastScopeBuffer = ObjectIdentifier(scopes)
     }

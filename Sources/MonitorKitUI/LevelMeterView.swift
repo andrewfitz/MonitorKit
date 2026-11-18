@@ -285,8 +285,10 @@ struct LevelMeterSource {
   ) {
     let n = min(max(n, 0), 16)
     if layouts.count != n { layouts = Array(repeating: MeterChannelLayout(), count: n) }
-    if let lastTime, time > lastTime { clock += time - lastTime }
-    if time.isFinite { lastTime = time }
+    if time.isFinite {
+      if let lastTime, time > lastTime { clock += time - lastTime }
+      lastTime = time
+    }
     let now = clock
     let fresh = s.sequence != sequence
     sequence = s.sequence

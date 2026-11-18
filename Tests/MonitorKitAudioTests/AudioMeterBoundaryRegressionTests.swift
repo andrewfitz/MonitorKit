@@ -86,6 +86,8 @@ final class AudioMeterBoundaryRegressionTests: XCTestCase {
       fastTimeConstant: 0.001, slowTimeConstant: 0.005, fastWeight: 0.5,
       returnRate: Double.greatestFiniteMagnitude)
     XCTAssertThrowsError(try AudioMeter(configuration: configuration))
+    configuration.customPPMBallistics?.returnRate = Double.leastNonzeroMagnitude
+    XCTAssertThrowsError(try AudioMeter(configuration: configuration))
   }
 
 }

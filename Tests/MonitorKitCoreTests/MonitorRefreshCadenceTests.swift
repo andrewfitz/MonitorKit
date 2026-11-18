@@ -6,7 +6,7 @@ import XCTest
 
 final class MonitorRefreshCadenceTests: XCTestCase {
   func testHighRateVideoKeepsScopesWithinSavedCeiling() {
-    for hz in [10, 15, 30] {
+    for hz in [10, 15, 30, 60, 120] {
       var cadence = MonitorRefreshCadence()
       var refreshes: [Double] = []
       for frame in 0..<1200 {
@@ -20,6 +20,21 @@ final class MonitorRefreshCadenceTests: XCTestCase {
       for (previous, next) in zip(refreshes, refreshes.dropFirst()) {
         XCTAssertGreaterThanOrEqual(next - previous + 1e-9, 1 / Double(hz))
       }
+    }
+  }
+
+  /// A ceiling equal to the display's rate takes every frame even when timestamps jitter
+  /// by tens of microseconds, as a display link's do.
+  func testACeilingAtTheDisplayRateKeepsEveryJitteredFrame() {
+    for hz in [60, 120] {
+      var cadence = MonitorRefreshCadence()
+      var count = 0
+      for frame in 0..<(hz * 10) {
+        let jitter = (frame % 3 == 0 ? -1.0 : frame % 3 == 1 ? 1.0 : 0.0) * 0.00005
+        let now = Double(frame) / Double(hz) + jitter
+        if cadence.isDue(at: now, maximumHz: hz) { cadence.didRefresh(at: now); count += 1 }
+      }
+      XCTAssertEqual(count, hz * 10, "\(hz) Hz on a \(hz) Hz display")
     }
   }
 

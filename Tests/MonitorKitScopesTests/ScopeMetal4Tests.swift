@@ -71,6 +71,20 @@ final class ScopeMetal4Tests: XCTestCase {
     XCTAssertEqual(a.appliedMonitorLUT, b.appliedMonitorLUT, message, file: file, line: line)
   }
 
+  func testAbandonedSubmissionIndicesCanDrain() throws {
+    enum Expected: Error { case stopped }
+    let host = try ScopeMTL4()
+    var pending: ScopeMTL4.Pending? = host.begin()
+    let index = try XCTUnwrap(pending?.submission.index)
+    XCTAssertThrowsError(try host.run { _ in throw Expected.stopped })
+    try host.run { _ in }
+    XCTAssertLessThan(host.completedIndex, index)
+    pending = nil
+    // Check progress before calling drain, so a regression fails without hanging the suite.
+    guard host.completedIndex == index + 2 else { return XCTFail("Abandoned submission held back GPU feedback") }
+    host.drain()
+  }
+
   func testAccumulationMatchesClassicBitForBit() throws {
     let m = try requireScopeMTL4()
     let engine = try XCTUnwrap(GPU.synchronousEngine)

@@ -70,10 +70,12 @@ public final class MonitorRawFrameDecoder {
     if count == 3 { minimum.append(format == .pa16 ? width * 2 : cw) }
     for index in 0..<count {
       let rows = index == 0 || (index == 2 && format == .pa16) ? height : ch
-      let (length, overflow) = strides[index].multipliedReportingOverflow(by: rows)
+      // The final row needs its pixels only. Its trailing padding may belong to another allocation.
+      let (lastRow, overflow) = strides[index].multipliedReportingOverflow(by: rows - 1)
       guard !overflow, offsets[index] >= 0, strides[index] >= minimum[index],
         strides[index] <= Int(UInt32.max), offsets[index] <= Int(UInt32.max),
-        length <= input.length, offsets[index] <= input.length - length else {
+        offsets[index] <= input.length, lastRow <= input.length - offsets[index],
+        minimum[index] <= input.length - offsets[index] - lastRow else {
         throw MonitorKitError.invalidFrame("Raw monitor plane storage is truncated or overflows.")
       }
     }

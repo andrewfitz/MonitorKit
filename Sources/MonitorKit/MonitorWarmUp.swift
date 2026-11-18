@@ -104,10 +104,15 @@ extension MonitorEngine {
     // Saved even when a build throws, so what was built is kept.
     defer { if save { pipelineArchive?.save() } }
     for target in targets { try prepare(target: target, layouts: layouts) }
+    // Every surface needs only the presence of a LUT while deriving its keys.
+    // Parse and upload the same identity placeholder once for this warm-up.
+    var placeholder: MonitorLUT?
     for surface in surfaces {
       // The stand-in a state change draws with while its specialized pipeline compiles.
       try prepare(target: surface.target, layouts: [surface.layout], compute: surface.compute)
-      for key in try Self.pipelineKeys(for: surface, placeholder: warmUpLUT()) {
+      let lut = try placeholder ?? warmUpLUT()
+      placeholder = lut
+      for key in try Self.pipelineKeys(for: surface, placeholder: lut) {
         if surface.compute { _ = try computePipeline(key) } else { _ = try renderPipeline(key) }
       }
     }

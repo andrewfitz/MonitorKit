@@ -125,6 +125,13 @@ final class LayoutTests: XCTestCase {
     XCTAssertNil(hidden.navigatorRect)
   }
 
+  func testSubpixelFitStaysInsideOnePixelViewport() {
+    for (w, h) in [(Int.max, 1), (1, Int.max)] {
+      let l = layout(w, h, 1, 1)
+      XCTAssertEqual(l.fitRect, MonitorRect(x: 0, y: 0, width: 1, height: 1))
+    }
+  }
+
   func testDegenerateInputsStayFinite() {
     let l = layout(0, 0, 0, 0, par: .nan) {
       $0.desqueeze = .nan
@@ -405,8 +412,9 @@ extension GuideSettings {
     return s.normalized().guides
   }
 
-  // MARK: - Clean aperture
+}
 
+final class CleanApertureLayoutTests: XCTestCase {
   func aperture(_ crop: MonitorRect?, _ vw: Int, _ vh: Int, par: Double = 1, _ configure: (inout ViewGeometry) -> Void = { _ in })
     -> MonitorLayout
   {

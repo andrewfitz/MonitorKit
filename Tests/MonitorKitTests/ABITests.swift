@@ -20,6 +20,15 @@ final class ABITests: XCTestCase {
     _ = try MonitorShaders.makeLibrary(device: gpu.device, parts: [.lut, .decode])
   }
 
+  func testRepeatedShaderPartsCompileOnce() throws {
+    let gpu = try requireGPU()
+    let library = try MonitorShaders.makeLibrary(
+      device: gpu.device, parts: [.lut, .decode, .monitor, .lut, .decode, .monitor])
+    for name in ["mk_fullscreen", "mk_picture", "mk_pictureKernel", "mk_focusMask"] {
+      XCTAssertNotNil(library.makeFunction(name: name), name)
+    }
+  }
+
   func fragmentBuffers() throws -> [Int: MTLBufferBinding] {
     let gpu = try requireGPU()
     let d = MTLRenderPipelineDescriptor()

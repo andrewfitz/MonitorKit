@@ -214,8 +214,12 @@ public final class MonitorRenderer {
       if now == 0 { now = Self.now() }
       if now >= due { changed = true }
     }
-    resolveLayer()
-    if changed { generation &+= 1 }
+    if changed {
+      // The primary surface and its colour inputs only move with changes read
+      // above. An unchanged display refresh can keep the resolved layer too.
+      resolveLayer()
+      generation &+= 1
+    }
     return changed
   }
 
@@ -228,6 +232,19 @@ public final class MonitorRenderer {
 
   /// Forgets the last draw, so `needsDisplay` is true until the next encode.
   public func setNeedsDisplay() { drawnKey = nil }
+
+  /// A failed buffer may have carried analyses as well as the picture. Their
+  /// encoded keys do not establish that the GPU produced reusable results.
+  func invalidateGPUResults() {
+    for source in sources {
+      for feed in source.feeds {
+        feed.analyzed = nil
+        feed.feed.invalidateFocusMask()
+      }
+    }
+    for overlay in overlays { overlay.accumulated = nil }
+    setNeedsDisplay()
+  }
 
   /// Draws the scene into `target` on a classic command buffer: focus analyses,
   /// scope accumulations, then one render pass that clears the target and draws

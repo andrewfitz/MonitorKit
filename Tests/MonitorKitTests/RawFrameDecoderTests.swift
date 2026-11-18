@@ -137,7 +137,8 @@ final class RawFrameDecoderTests: XCTestCase {
     var encoded: MonitorRawFrameDecoder.Encoding?
     try host.run { submission in
       encoded = try decoder.encode(input: input, format: .r12l, width: width, height: 1,
-        strides: [bytes.count], signal: SignalDescription(range: .full),
+        // Padding after the final row is outside the vendor allocation.
+        strides: [bytes.count + 256], signal: SignalDescription(range: .full),
         commandBuffer: submission.commandBuffer, residency: host.host)
       host.host.commit()
     }

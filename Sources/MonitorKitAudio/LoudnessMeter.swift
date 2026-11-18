@@ -44,6 +44,7 @@ public final class LoudnessMeter: @unchecked Sendable {
 
   /// The standard layout for the channel count (see `LoudnessChannel.standardLayout`).
   public convenience init(sampleRate: Double, channelCount: Int) throws(AudioMeterError) {
+    try validateFormat(sampleRate: sampleRate, channelCount: channelCount)
     try self.init(sampleRate: sampleRate, channels: LoudnessChannel.standardLayout(channelCount: channelCount))
   }
 

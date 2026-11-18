@@ -350,7 +350,10 @@ extension ScopeSettings {
   /// a viewport that has settled (not every frame of a live resize).
   public func atNativeResolution(viewportWidth: Int, viewportHeight: Int) -> ScopeSettings {
     func even(_ x: Int) -> Int { (max(2, x) + 1) & ~1 }
-    let width = max(1, viewportWidth), height = max(1, viewportHeight)
+    // Larger dimensions already saturate the bin limits. Clamp before even
+    // rounding and parade arithmetic, which can overflow for public Int inputs.
+    let width = min(Self.waveformColumnRange.upperBound, max(1, viewportWidth))
+    let height = min(Self.waveformLevelRange.upperBound, max(1, viewportHeight))
     var s = self
     switch kind {
     case .waveform:

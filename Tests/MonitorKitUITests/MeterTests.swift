@@ -387,6 +387,8 @@ extension MeterTests {
     s.sequence = 1
     s.channels[0] = AudioChannelLevels(truePeak: -6, truePeakHold: -6, truePeakMax: -6)
     animator.advance(s, channels: 1, scale: scale, at: 1000, animate: true)
+    animator.advance(s, channels: 1, scale: scale, at: .infinity, animate: true)
+    XCTAssertEqual(animator.layouts[0].bar, scale.position(of: -6), accuracy: 0.001)
     animator.advance(s, channels: 1, scale: scale, at: 1000 - 3600, animate: true)
     animator.advance(s, channels: 1, scale: scale, at: 1000 - 3600 + 1, animate: true)
     XCTAssertLessThan(animator.layouts[0].bar, scale.position(of: -15), "1 s of fall since the step")

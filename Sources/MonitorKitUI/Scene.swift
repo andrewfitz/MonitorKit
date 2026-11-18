@@ -32,7 +32,11 @@ public struct MonitorRegion: Equatable, Sendable {
   /// view tile the target with no gap or overlap. Nil when empty or not finite.
   public func viewport(width w: Int, height h: Int, pixelsPerPoint: Double = 1) -> MonitorViewport? {
     guard x.isFinite, y.isFinite, width.isFinite, height.isFinite, w > 0, h > 0 else { return nil }
-    func edge(_ v: Double, _ size: Int) -> Int { Int(min(max(v, 0), 1) * Double(size) + 0.5) }
+    func edge(_ v: Double, _ size: Int) -> Int {
+      let rounded = (min(max(v, 0), 1) * Double(size)).rounded()
+      // Double(Int.max) rounds above Int.max: the clipped far edge is still size.
+      return Int(exactly: rounded).map { min($0, size) } ?? size
+    }
     let x0 = edge(x, w), x1 = edge(x + width, w), y0 = edge(y, h), y1 = edge(y + height, h)
     guard x1 > x0, y1 > y0 else { return nil }
     return MonitorViewport(x: x0, y: y0, width: x1 - x0, height: y1 - y0, pixelsPerPoint: pixelsPerPoint)

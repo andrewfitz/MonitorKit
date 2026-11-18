@@ -193,7 +193,8 @@ final class ScopeBenchmarkTests: XCTestCase {
 
   /// Small (picture-in-picture) viewports against large bin counts: the
   /// minified axes are reduced once per accumulation, so a draw costs one
-  /// sample per pixel however many bins it shows.
+  /// sample per pixel however many bins it shows. Alternating gain also
+  /// measures a new resolve on every draw, as after new bins arrive.
   func testBenchmarkPiPRender() throws {
     let (device, _, _) = try GPU.require()
     let frame = try Self.frame(.v210, .natural, width: 1920, height: 1080)
@@ -215,6 +216,7 @@ final class ScopeBenchmarkTests: XCTestCase {
       let target = try XCTUnwrap(device.makeTexture(descriptor: d))
       let engine = Self.engines[1].1
       var line = "PiP render \(width)×\(height), GPU ms per redraw of unchanged bins (min of 15 × 10):"
+      var resolveLine = "PiP resolve + draw \(width)×\(height), GPU ms with a new trace every draw (min of 15 × 10):"
       for (name, settings) in scopes {
         let accumulator = try engine.makeAccumulator(settings: settings)
         try GPU.run { cb in try accumulator.accumulate(frame.frame, burnInLUT: nil, monitorLUT: nil, into: cb) }
@@ -224,12 +226,21 @@ final class ScopeBenchmarkTests: XCTestCase {
           try renderer.render(accumulator, target: target, into: cb)
         }
         line += String(format: " %@ %.4f;", name, ms)
+        var display = settings.display, flip = false
+        let gain = display.gain
+        let resolveMS = try Self.gpuMilliseconds(samples: 15, minimum: true) { cb in
+          flip.toggle()
+          display.gain = gain * (flip ? 1 : 1.0001)
+          try renderer.render(accumulator, display: display, target: target, into: cb)
+        }
+        resolveLine += String(format: " %@ %.4f;", name, resolveMS)
       }
       let empty = try engine.makeAccumulator(settings: Self.scopes[0].1)
       let renderer = engine.makeRenderer()
       let floor = try Self.gpuMilliseconds(samples: 15, minimum: true) { cb in try renderer.render(empty, target: target, into: cb) }
       line += String(format: " no data (floor) %.4f;", floor)
       print(line)
+      print(resolveLine)
     }
   }
 

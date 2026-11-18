@@ -14,8 +14,12 @@ public struct MonitorRefreshCadence: Sendable {
     return max(timestamp, lastRefresh + 1 / Double(max(1, maximumHz)))
   }
 
+  /// Due within a millisecond (a tenth of the interval at most). Display link timestamps
+  /// come in host-clock ticks and jitter slightly, so a ceiling equal to the display's
+  /// rate (60 on 60, 120 on 120) would otherwise miss every other frame and run at half.
   public func isDue(at timestamp: Double, maximumHz: Int) -> Bool {
-    timestamp.isFinite && nextRefresh(at: timestamp, maximumHz: maximumHz) <= timestamp + 1e-9
+    let slack = min(0.001, 0.1 / Double(max(1, maximumHz)))
+    return timestamp.isFinite && nextRefresh(at: timestamp, maximumHz: maximumHz) <= timestamp + slack
   }
 
   /// Call only after submitting the optional work successfully.

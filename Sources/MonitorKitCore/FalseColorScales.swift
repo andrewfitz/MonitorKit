@@ -83,15 +83,8 @@ public enum FalseColorTable {
   ) -> [FalseColorBand] {
     switch settings.mode {
     case .off: return []
-    case .sonySLog3:
-      return SonySLog3FalseColor.zones.map {
-        FalseColorBand(lower: $0.lowerIRE, upper: $0.upperIRE, color: $0.category.color)
-      }
-    case .arriStyleSLog3:
-      // Purple keeps its published floor, as `SonyARRIStyleFalseColor.category` does.
-      return arriBands(.logC3EI800, range: .full).map {
-        FalseColorBand(lower: max($0.lower, 0), upper: $0.upper, color: $0.color)
-      }
+    case .sonySLog3: return sonyBands
+    case .arriStyleSLog3: return arriStyleBands
     case .arriLogC:
       guard let curve = arriCurve, let profile = arriProfile(for: curve) else { return [] }
       return arriBands(profile, range: arriFullRange ? .full : .legal)
@@ -100,7 +93,30 @@ public enum FalseColorTable {
     }
   }
 
+  // The picture pass reads these tables for each frame. Keep the converted
+  // bands once, just as the reference profiles keep their source zones.
+  private static let sonyBands = SonySLog3FalseColor.zones.map {
+    FalseColorBand(lower: $0.lowerIRE, upper: $0.upperIRE, color: $0.category.color)
+  }
+  private static let logC3LegalBands = makeARRIBands(.logC3EI800, range: .legal)
+  private static let logC3FullBands = makeARRIBands(.logC3EI800, range: .full)
+  private static let logC4LegalBands = makeARRIBands(.alexa35LogC4EI800, range: .legal)
+  private static let logC4FullBands = makeARRIBands(.alexa35LogC4EI800, range: .full)
+  private static let arriStyleBands = logC3FullBands.map {
+    // Purple keeps its published floor, as `SonyARRIStyleFalseColor.category` does.
+    FalseColorBand(lower: max($0.lower, 0), upper: $0.upper, color: $0.color)
+  }
+
   static func arriBands(_ profile: ARRIFalseColorProfile, range: CodeRange) -> [FalseColorBand] {
+    switch (profile, range) {
+    case (.logC3EI800, .legal): return logC3LegalBands
+    case (.logC3EI800, .full): return logC3FullBands
+    case (.alexa35LogC4EI800, .legal): return logC4LegalBands
+    case (.alexa35LogC4EI800, .full): return logC4FullBands
+    }
+  }
+
+  private static func makeARRIBands(_ profile: ARRIFalseColorProfile, range: CodeRange) -> [FalseColorBand] {
     profile.zones(range: range).map {
       FalseColorBand(lower: $0.lower, upper: $0.upper, color: $0.category.color)
     }

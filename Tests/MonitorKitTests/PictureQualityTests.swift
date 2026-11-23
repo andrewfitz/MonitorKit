@@ -27,7 +27,7 @@ final class PictureQualityTests: XCTestCase {
     // The picture pass binds two at buffer 0 (the source and the output reading).
     XCTAssertEqual(MemoryLayout<PassFrameParameters>.stride, 160)
     // The documented sizes: a change here must update ARCHITECTURE.md's uniform sizes too.
-    XCTAssertEqual(MemoryLayout<PassParameters>.stride, 1680)
+    XCTAssertEqual(MemoryLayout<PassParameters>.stride, 1712)
     XCTAssertEqual(MemoryLayout<GuideParameters>.stride, 2592)
     XCTAssertEqual(MonitorPass.uniformLength, 5376)
     XCTAssertEqual(MonitorFeed.uniformLength, 1024)

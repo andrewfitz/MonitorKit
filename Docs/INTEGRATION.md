@@ -274,8 +274,8 @@ final class SubmissionClock: Sendable {
 
 `MonitorPass.outputColor` says what the target's values mean; the layer must be tagged to match.
 
-- **Signal-native** (`MonitorOutputColor.signalNative`, the default) writes the picture's own R'G'B'. Tag the layer with `pass.outputColor.layer(for: frame.signal, displayTransform: state.displayTransform.mode, monitorStageHasLUT: feed.monitorStageHasLUT(for: state))`: PQ and HLG signals get an `rgba16Float` EDR layer in their BT.2100 space with HDR10 or HLG metadata; SDR signals a `bgr10a2Unorm` layer in their primaries. `MonitorLayerColor.apply(to:)` (MonitorKitUI) sets pixel format, colour space, EDR and metadata. Re-tag only when the result changes: a new pixel format reallocates the drawables (and the layer's residency set).
-- Any LUT on the picture's stage makes the picture Rec.709 SDR (LUT output is Rec.709 display R'G'B'); that is why `monitorStageHasLUT` is an argument.
+- **Signal-native** (`MonitorOutputColor.signalNative`, the default) writes the picture's own R'G'B'. Use the signal of the picture stage to tag the layer, as in the example below. PQ and HLG signals get an `rgba16Float` EDR layer in their BT.2100 space with HDR10 or HLG metadata. SDR signals get a `bgr10a2Unorm` layer in their primaries. `MonitorLayerColor.apply(to:)` (MonitorKitUI) sets pixel format, colour space, EDR and metadata. Re-tag only when the result changes, since a new pixel format reallocates the drawables and their residency set.
+- Viewing LUTs default to Rec.709 SDR. When the LUT produces a declared display signal, attach its metadata with `withOutputSignal(_:)` and use that display signal for the layer. This shares its existing GPU texture.
 - **Explicit encodings** (`.sdr`, `.extendedLinear`, `.pq`, `.hlg`) convert in linear light to the target, for a layer whose colour you fix. For `.extendedLinear` with `.hdrPassthrough`, keep `outputColor.headroom` at the screen's current EDR headroom (a uniform: changing it rebuilds nothing). `MonitorDisplayHeadroom.current(for:)` reads it.
 - Overlays (zebras, guides, peaking, false-colour grey) land at BT.2408 graphics white on HDR layers (203 cd/m²: 58 % PQ, 75 % HLG), never at peak.
 - A scope drawn into the same layer as an HDR picture needs `scopeRenderer.colorPipeline = pass.colorPipeline`, or it writes SDR values onto an HDR-tagged layer. A scope on a layer of its own uses `setOutputColor(_:signal:displayTransform:monitorStageHasLUT:)` or keeps the SDR default.
@@ -289,8 +289,11 @@ import QuartzCore
 @discardableResult
 func tag(_ layer: CAMetalLayer, pass: MonitorPass, frame: MonitorFrame, feed: MonitorFeed, state: MonitorState,
          current: MonitorLayerColor?) -> MonitorLayerColor {
+  let lut = feed.pictureLUT(for: state)
+  let declared = lut?.displayOutputSignal
   let color = pass.outputColor.layer(
-    for: frame.signal, displayTransform: state.displayTransform.mode, monitorStageHasLUT: feed.monitorStageHasLUT(for: state))
+    for: declared ?? frame.signal, displayTransform: state.displayTransform.mode,
+    monitorStageHasLUT: lut != nil && declared == nil)
   if color != current {
     CATransaction.begin()
     CATransaction.setDisableActions(true)
@@ -332,7 +335,7 @@ Scopes are counted on the GPU from every pixel of a frame into bins sized to the
 
 ## 9. Audio meters
 
-`AudioMeter` runs on your audio thread: `process(…)` from one thread at a time (a tap, an `AVAudioSinkNode`, a capture callback). It allocates nothing, takes no lock and never blocks. The UI reads `snapshot()` at display rate from any thread (lock-free); resets and loudness pause are requests from any thread that take effect at the next 5 or 10 ms tick of audio. Call `flush()` on the audio thread when a stream stops, so its last few milliseconds (and any over in them) reach the snapshot. Show `programmeMaximumTruePeak` as R 128's "Max TP". Rebuild the meter when the sample rate or channel count changes.
+`AudioMeter` runs on your audio thread: `process(…)` from one thread at a time (a tap, an `AVAudioSinkNode`, a capture callback). It allocates nothing, takes no lock and never blocks. The UI reads `snapshot()` at display rate from any thread (lock-free); resets and loudness pause are requests from any thread that take effect at the next 5 or 10 ms tick of audio. Call `flush()` on the audio thread to publish pending readings during capture. Call `finishStream()` when the stream ends to include intersample overs through the last real sample. Show `programmeMaximumTruePeak` as R 128's "Max TP". Rebuild the meter when the sample rate or channel count changes.
 
 ## 10. Worked example: a multi-camera monitor
 
@@ -655,8 +658,8 @@ How a host's pieces map onto it:
 
 **Colour**
 
-- Any LUT on the picture's stage makes it Rec.709 SDR and every display transform unavailable (`.lutOnMonitorStage`). To see a display transform while a LUT is burned in, show `pictureStage = .source`.
-- Re-tag the layer when `outputColor.layer(…)` changes, and pass `feed.monitorStageHasLUT(for: state)`, which follows `pictureStage`.
+- A viewing LUT with the default Rec.709 output disables display transforms (`.lutOnMonitorStage`). A declared PQ or HLG LUT output can use HDR passthrough or the HDR-to-SDR transform.
+- Re-tag the layer when `outputColor.layer(…)` changes. Use `feed.pictureLUT(for: state)` to resolve any declaration and legacy Rec.709 fallback for that stage.
 - On a layer shared with an HDR picture, set `scopeRenderer.colorPipeline = pass.colorPipeline`.
 - Never relabel a frame with one stage's reading for a pass (say, the Output reading for an Output-stage picture): the other stages' tools on that pass would read the codes with it. Set `signal.outputReading` once and hand every pass the same frame.
 - Declare log encodings; they are never inferred. An unlabelled or log signal shown without a LUT or transform is a code-value view (`status.isCodeValueView`): its brightness is not exposure.
@@ -684,7 +687,7 @@ How a host's pieces map onto it:
 **Audio**
 
 - `process` and `flush` from one thread only; `snapshot()` from anywhere.
-- `flush()` when a stream stops, or its last overs never show.
+- `finishStream()` when a stream ends to include its last reconstructed peaks.
 
 ## 12. Moving from a hand-written monitor
 

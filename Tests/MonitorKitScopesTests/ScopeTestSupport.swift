@@ -385,9 +385,9 @@ extension ScopeKernelParameters {
   }
 
   /// The stage Y' the statistics measure, as the picture's `mk_stageLuma`: the
-  /// transport luma where no LUT touched the stage, Rec.709 Y' of a LUT result.
+  /// transport luma where no LUT touched the stage, the declared Y' of a LUT result.
   func statisticsLuma(_ rgb: SIMD3<Float>, transport: Float) -> Float {
-    luts.x != 0 || luts.y != 0 ? mkLuma(rgb, SIMD3(0.2126, 0.7152, 0.0722)) : transport
+    luts.x != 0 || luts.y != 0 ? mkLuma(rgb, SIMD3(stageWeights.x, stageWeights.y, stageWeights.z)) : transport
   }
 }
 

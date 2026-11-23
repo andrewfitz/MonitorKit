@@ -151,6 +151,24 @@ final class RawFrameDecoderTests: XCTestCase {
     host.host.commit()
   }
 
+  func testRawDimensionsBeyondTheDeviceLimitFailBeforeEncoding() throws {
+    let host = try requireMTL4()
+    let decoder = try MonitorRawFrameDecoder(device: host.gpu.device)
+    let length = (host.gpu.device.supportsFamily(.apple10) ? 32_768 : 16_384) + 1
+    let input = try XCTUnwrap(host.gpu.device.makeBuffer(length: length * 4))
+    let residency = try host.gpu.device.makeResidencySet(descriptor: MTLResidencySetDescriptor())
+    try host.run { submission in
+      for (width, height) in [(length, 1), (1, length)] {
+        XCTAssertThrowsError(try decoder.encode(input: input, format: .rgba8, width: width, height: height,
+          strides: [width * 4], signal: .rec709, commandBuffer: submission.commandBuffer,
+          residency: residency)) { error in
+          XCTAssertEqual(error as? MonitorKitError, .invalidFrame("Invalid raw monitor dimensions or device."))
+        }
+      }
+    }
+    XCTAssertEqual(residency.allocationCount, 0)
+  }
+
   func testTruncatedRawPlanesFailBeforeEncoding() throws {
     let host = try TestMTL4.shared.get()
     let decoder = try MonitorRawFrameDecoder(device: host.gpu.device)

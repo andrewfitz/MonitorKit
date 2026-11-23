@@ -243,8 +243,11 @@ public struct FocusSettings: Codable, Equatable, Sendable {
     stage = c.lenient(.stage, stage)
   }
 
+  var normalizedSensitivity: Double { sensitivity.isFinite ? min(1, max(0, sensitivity)) : 0.5 }
+  package var normalizedNoiseRejection: Double { noiseRejection.isFinite ? min(1, max(0, noiseRejection)) : 0.02 }
+
   /// Gradient threshold used by the edge detector.
-  public var edgeThreshold: Double { 0.02 + (1 - min(1, max(0, sensitivity))) * 0.3 }
+  public var edgeThreshold: Double { 0.02 + (1 - normalizedSensitivity) * 0.3 }
 }
 
 /// How a frame guide is drawn: frame lines, a matte outside the frame, or both.
@@ -480,11 +483,9 @@ public struct DisplayAdjustments: Codable, Equatable, Sendable {
 /// Monitor-only picture transforms, applied after the monitor LUT (Sony "Gamma
 /// Display Assist", the Video Assist's HDR/SDR monitoring). They change only what
 /// this surface shows: zebras, false colour, peaking, clip indicators and scopes
-/// keep measuring their stage. They need the camera's own signal: with a burn-in
-/// or monitor LUT on the surface, LUT output is Rec.709 display R'G'B' (the
-/// convention of every LUT stage), so a transform is unavailable
-/// (`MonitorUnavailableReason.lutOnMonitorStage`), as Sony's Gamma Display Assist
-/// is while a LUT is applied.
+/// keep measuring their stage. They use the camera's signal or a LUT's
+/// explicitly declared display signal. A LUT with the default Rec.709
+/// convention disables display transforms (`MonitorUnavailableReason.lutOnMonitorStage`).
 public enum DisplayTransform: String, Codable, Sendable, CaseIterable {
   /// No transform.
   case none
@@ -683,8 +684,7 @@ public struct MonitorState: Codable, Equatable, Sendable {
 
   /// Whether the picture this state shows came out of a LUT: a burn-in LUT on the
   /// output or monitor stage, or the monitor LUT (when `monitorLUT`) on the monitor
-  /// stage. LUT output is Rec.709 display R'G'B', so such a picture is Rec.709 SDR
-  /// and display transforms are unavailable.
+  /// stage. A LUT's output declaration determines that stage's colour.
   public func pictureHasLUT(burnInLUT: Bool, monitorLUT hasMonitorLUT: Bool) -> Bool {
     switch pictureStage {
     case .source: return false
@@ -796,8 +796,8 @@ public struct MonitorState: Codable, Equatable, Sendable {
         bands.filter { $0.lower < $0.upper && $0.color.isFinite }
           .prefix(FalseColorSettings.maximumCustomBands))
     }
-    v.focus.sensitivity = b(focus.sensitivity, 0...1, 0.5)
-    v.focus.noiseRejection = b(focus.noiseRejection, 0...1, 0.02)
+    v.focus.sensitivity = focus.normalizedSensitivity
+    v.focus.noiseRejection = focus.normalizedNoiseRejection
     v.focus.opacity = b(focus.opacity, 0...1, 0.85)
     func validAspect(_ a: Double) -> Bool { a.isFinite && a >= 0.1 && a <= 10 }
     let frameGuides = guides.frameGuides

@@ -4,16 +4,32 @@
 import Accelerate
 import Foundation
 
-/// The meters' internal tick: 100 ms split into the most parts that keep it a
-/// whole number of frames (5 ms at 48/96 kHz, 10 ms at 44.1 kHz). Momentary
-/// and short-term windows slide one tick at a time, so a 400 ms tone that
-/// starts anywhere on a 5 ms grid is measured whole (EBU Tech 3341 cases 13/14).
-func meterTick(sampleRate: Double) -> (frames: Int, perHundredMilliseconds: Int) {
-  let block = max(1, Int((sampleRate / 10).rounded()))
-  for parts in [20, 10, 8, 5, 4, 2] where block % parts == 0 {
-    return (block / parts, parts)
+/// Five-millisecond ticks, or ten milliseconds when that gives an integral
+/// sample count (e.g. 44.1 kHz). Round cumulative boundaries so fractional
+/// rates neither drift nor require a longer tick to fit a gating block.
+struct MeterTickGrid {
+  let ticksPerBlock: Int
+  let nominalFrames: Double
+  private let fixedFrames: Int
+
+  init(sampleRate: Double) {
+    let five = sampleRate / 200
+    let ten = sampleRate / 100
+    ticksPerBlock = five != five.rounded() && ten == ten.rounded() ? 10 : 20
+    nominalFrames = sampleRate / Double(10 * ticksPerBlock)
+    fixedFrames = nominalFrames == nominalFrames.rounded() ? Int(nominalFrames) : 0
   }
-  return (block, 1)
+
+  var variable: Bool { fixedFrames == 0 }
+
+  /// Actual frames in a window of whole ticks. The grid extends before
+  /// zero for the RMS window's initial silence.
+  func frames(startingAt first: Int, ticks count: Int = 1) -> Int {
+    if fixedFrames != 0 { return fixedFrames * count }
+    let start = (Double(first) * nominalFrames).rounded()
+    let end = (Double(first + count) * nominalFrames).rounded()
+    return Int(end - start)
+  }
 }
 
 /// Combines and clears one tick's channel energies. Unit-scale layouts skip
@@ -216,8 +232,7 @@ final class LoudnessEngine {
   }
 
   let sampleRate: Double
-  let tickFrames: Int
-  let ticksPerBlock: Int
+  let grid: MeterTickGrid
   let momentaryTicks: Int
   let shortTermTicks: Int
   /// Channels with a nonzero weight.
@@ -247,6 +262,9 @@ final class LoudnessEngine {
   /// Tick energies: all audio (momentary, short-term) and measured audio only (gating, LRA).
   private let ring: UnsafeMutablePointer<Double>
   private let gateRing: UnsafeMutablePointer<Double>
+  /// Pausing can splice together ticks of different lengths. Keep their
+  /// frame counts alongside the measured energies on fractional grids.
+  private let gateLengths: UnsafeMutablePointer<Double>?
   private let blocks: LoudnessHistogram
   private let shortTerms: LoudnessHistogram
   let state: UnsafeMutablePointer<State>
@@ -270,9 +288,9 @@ final class LoudnessEngine {
     blocks = LoudnessHistogram(storesEnergy: true, energyLoudnessOffset: energyLoudnessOffset, maximumLoudness: 150 + 10 * log10(maximumWeight))
     shortTerms = LoudnessHistogram(storesEnergy: false, energyLoudnessOffset: energyLoudnessOffset, maximumLoudness: 150 + 10 * log10(maximumWeight))
     let (shelf, highPass) = KWeighting.filters(sampleRate: sampleRate)
-    (tickFrames, ticksPerBlock) = meterTick(sampleRate: sampleRate)
-    momentaryTicks = 4 * ticksPerBlock
-    shortTermTicks = 30 * ticksPerBlock
+    grid = MeterTickGrid(sampleRate: sampleRate)
+    momentaryTicks = 4 * grid.ticksPerBlock
+    shortTermTicks = 30 * grid.ticksPerBlock
 
     let active = channelWeights.indices.filter { channelWeights[$0] > 0 }
     activeCount = active.count
@@ -300,6 +318,8 @@ final class LoudnessEngine {
     ring.initialize(repeating: 0, count: shortTermTicks)
     gateRing = .allocate(capacity: shortTermTicks)
     gateRing.initialize(repeating: 0, count: shortTermTicks)
+    gateLengths = grid.variable ? .allocate(capacity: shortTermTicks) : nil
+    gateLengths?.initialize(repeating: 0, count: shortTermTicks)
     state = .allocate(capacity: 1)
     state.initialize(to: State())
   }
@@ -314,6 +334,7 @@ final class LoudnessEngine {
     weighted.deallocate()
     ring.deallocate()
     gateRing.deallocate()
+    gateLengths?.deallocate()
     blocks.deallocate()
     shortTerms.deallocate()
     state.deallocate()
@@ -325,6 +346,7 @@ final class LoudnessEngine {
     var i = 0
     while i < frames {
       if state.pointee.tickPosition == 0 { state.pointee.measuring = state.pointee.requestedMeasuring }
+      let tickFrames = grid.frames(startingAt: state.pointee.ticks)
       let n = min(frames - i, tickFrames - state.pointee.tickPosition)
       filter(offset: i, count: n)
       i += n
@@ -332,7 +354,7 @@ final class LoudnessEngine {
       if state.pointee.measuring { state.pointee.frames += n }
       if state.pointee.tickPosition == tickFrames {
         state.pointee.tickPosition = 0
-        finishTick()
+        finishTick(frames: tickFrames)
       }
     }
     state.pointee.readings.duration = Double(state.pointee.frames) / sampleRate
@@ -370,7 +392,7 @@ final class LoudnessEngine {
     energy > 0 ? Float(-0.691 + 10 * log10(energy) + energyLoudnessOffset) : -.infinity
   }
 
-  private func finishTick() {
+  private func finishTick(frames: Int) {
     let energy = weightedTickEnergy(
       energies, weights: weights, scale: weightScale, channelCount: activeCount)
     let st = state
@@ -381,26 +403,30 @@ final class LoudnessEngine {
     let ticks = st.pointee.ticks
     let resetTicks = st.pointee.resetTicks
     if ticks >= momentaryTicks {
-      let l = scaledLoudness(windowSum(ring, head: st.pointee.ringHead, momentaryTicks) / Double(momentaryTicks * tickFrames))
+      let count = grid.frames(startingAt: ticks - momentaryTicks, ticks: momentaryTicks)
+      let l = scaledLoudness(windowSum(ring, head: st.pointee.ringHead, momentaryTicks) / Double(count))
       st.pointee.readings.momentary = l
       if resetTicks >= momentaryTicks { st.pointee.readings.momentaryMax = max(st.pointee.readings.momentaryMax, l) }
     }
     if ticks >= shortTermTicks {
-      let l = scaledLoudness(windowSum(ring, head: st.pointee.ringHead, shortTermTicks) / Double(shortTermTicks * tickFrames))
+      let count = grid.frames(startingAt: ticks - shortTermTicks, ticks: shortTermTicks)
+      let l = scaledLoudness(windowSum(ring, head: st.pointee.ringHead, shortTermTicks) / Double(count))
       st.pointee.readings.shortTerm = l
       if resetTicks >= shortTermTicks { st.pointee.readings.shortTermMax = max(st.pointee.readings.shortTermMax, l) }
     }
 
     guard st.pointee.measuring else { return }
     gateRing[st.pointee.gateHead] = energy
+    gateLengths?[st.pointee.gateHead] = Double(frames)
     st.pointee.gateHead = st.pointee.gateHead + 1 == shortTermTicks ? 0 : st.pointee.gateHead + 1
     st.pointee.gateTicks += 1
     let gateTicks = st.pointee.gateTicks
     // Gating blocks: 400 ms, 75 % overlap (BS.1770-4 eqs. 3-7); LRA input: 3 s at 10 Hz.
-    guard gateTicks % ticksPerBlock == 0 else { return }
+    guard gateTicks % grid.ticksPerBlock == 0 else { return }
     let head = st.pointee.gateHead
     if gateTicks >= momentaryTicks {
-      let momentary = windowSum(gateRing, head: head, momentaryTicks) / Double(momentaryTicks * tickFrames)
+      let count = gateLengths.map { windowSum($0, head: head, momentaryTicks) } ?? Double(momentaryTicks * frames)
+      let momentary = windowSum(gateRing, head: head, momentaryTicks) / count
       if momentary > 0 {
         let l = -0.691 + 10 * log10(momentary) + energyLoudnessOffset
         if l > -70 {
@@ -410,7 +436,8 @@ final class LoudnessEngine {
       }
     }
     if gateTicks >= shortTermTicks {
-      let shortTerm = windowSum(gateRing, head: head, shortTermTicks) / Double(shortTermTicks * tickFrames)
+      let count = gateLengths.map { windowSum($0, head: head, shortTermTicks) } ?? Double(shortTermTicks * frames)
+      let shortTerm = windowSum(gateRing, head: head, shortTermTicks) / count
       if shortTerm > 0 {
         let l = -0.691 + 10 * log10(shortTerm) + energyLoudnessOffset
         if l >= -70 {
@@ -435,6 +462,9 @@ final class LoudnessEngine {
     energies.update(repeating: 0, count: max(activeCount, 1))
     if state.pointee.measuring { state.pointee.frames -= partial }
     state.pointee.tickPosition = 0
+    // A mid-tick reset excluded the unfinished tick from the new maxima.
+    // Flushing discards it, so the next complete tick counts immediately.
+    if state.pointee.resetTicks < 0 { state.pointee.resetTicks = 0 }
     state.pointee.readings.duration = Double(state.pointee.frames) / sampleRate
   }
 

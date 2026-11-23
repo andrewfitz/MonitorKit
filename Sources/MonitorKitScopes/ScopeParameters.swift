@@ -16,6 +16,7 @@ struct ScopeKernelParameters {
   var weights = SIMD4<Float>.zero
   var chroma = SIMD4<Float>.zero
   var clip = SIMD4<Float>.zero
+  var stageWeights = SIMD4<Float>(0.2126, 0.7152, 0.0722, 0)
 }
 
 /// Mirrors `mk_ScopeMaintain`: the clear and finalize of up to three

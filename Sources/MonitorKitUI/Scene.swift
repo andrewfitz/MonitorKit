@@ -236,24 +236,21 @@ public final class MonitorSurface: Sendable {
 
   var revision: UInt64 { shared.withLock { $0.revision } }
 
+  /// Publish or clear under the same lock that protects ownership. A renderer
+  /// drawing no pixels can clear its own (or an abandoned) publication only.
   func publish(
-    status: MonitorStatus?, layout: MonitorLayout?, viewport: MonitorViewport?, by publisher: MonitorPublisher
-  ) {
-    shared.withLock {
-      if let status { $0.status = status }
-      $0.layout = layout
-      $0.viewport = viewport
-      $0.publisher = publisher
-    }
-  }
-
-  /// What the handle holds if `renderer` may take it as its own: it published
-  /// it, or no renderer that still exists did. Another live renderer's
-  /// publication is not this one's to clear.
-  func publication(for renderer: MonitorPublisher) -> (layout: MonitorLayout?, viewport: MonitorViewport?) {
+    status: MonitorStatus, layout: MonitorLayout?, viewport: MonitorViewport?, by publisher: MonitorPublisher
+  ) -> Bool {
     shared.withLock { s in
-      guard s.publisher == nil || s.publisher === renderer else { return (nil, nil) }
-      return (s.layout, s.viewport)
+      if viewport == nil {
+        guard s.viewport != nil, s.publisher == nil || s.publisher === publisher else { return false }
+      }
+      let changed = s.status != status || (s.publisher !== publisher && viewport != nil)
+      if changed { s.status = status }
+      if s.layout != layout { s.layout = layout }
+      if s.viewport != viewport { s.viewport = viewport }
+      if s.publisher !== publisher { s.publisher = publisher }
+      return changed
     }
   }
 }
@@ -279,6 +276,7 @@ public final class MonitorScopeOverlay: Sendable {
     var graticule: ScopeGraticule?
     var viewport: MonitorViewport?
     var statisticsReader: ScopeStatisticsReader?
+    weak var statisticsPublisher: MonitorPublisher?
     /// The renderer that published the graticule and viewport last (nil: none, or it is gone).
     weak var publisher: MonitorPublisher?
   }
@@ -332,8 +330,8 @@ public final class MonitorScopeOverlay: Sendable {
   }
 
   /// The statistics of this scope's accumulations (clip %, luma extremes), for UI
-  /// threads, once a renderer has built its accumulator (of the renderer that
-  /// built one last, when the overlay is in several views). A reference handoff:
+  /// threads, while the overlay is being measured. A hidden statistics-only
+  /// overlay with a live source still publishes a reader. A reference handoff:
   /// reading it never touches the frame path.
   public var statisticsReader: ScopeStatisticsReader? { shared.withLock { $0.statisticsReader } }
 
@@ -397,21 +395,28 @@ public final class MonitorScopeOverlay: Sendable {
     }
   }
 
-  func publish(graticule: ScopeGraticule?, viewport: MonitorViewport?, by publisher: MonitorPublisher) {
-    shared.withLock {
-      if let graticule { $0.graticule = graticule }
-      $0.viewport = viewport
-      $0.publisher = publisher
+  func publish(graticule: ScopeGraticule?, viewport: MonitorViewport?, by publisher: MonitorPublisher) -> Bool {
+    shared.withLock { s in
+      if viewport == nil {
+        guard s.viewport != nil, s.publisher == nil || s.publisher === publisher else { return false }
+      }
+      let changed = s.graticule != graticule || (s.publisher !== publisher && viewport != nil)
+      if changed { s.graticule = graticule }
+      if s.viewport != viewport { s.viewport = viewport }
+      if s.publisher !== publisher { s.publisher = publisher }
+      return changed
     }
   }
 
-  /// The viewport the handle holds if `renderer` may take it as its own (as for a surface).
-  func publishedViewport(for renderer: MonitorPublisher) -> MonitorViewport? {
-    shared.withLock { s in s.publisher == nil || s.publisher === renderer ? s.viewport : nil }
-  }
-
-  func publish(statisticsReader: ScopeStatisticsReader) {
-    shared.withLock { $0.statisticsReader = statisticsReader }
+  func publishStatistics(_ reader: ScopeStatisticsReader?, by publisher: MonitorPublisher, onlyIfMissing: Bool = false) {
+    shared.withLock { s in
+      if onlyIfMissing, s.statisticsReader != nil { return }
+      if reader == nil, s.statisticsPublisher != nil, s.statisticsPublisher !== publisher { return }
+      if s.statisticsReader !== reader {
+        s.statisticsReader = reader
+        s.statisticsPublisher = reader == nil ? nil : publisher
+      }
+    }
   }
 }
 

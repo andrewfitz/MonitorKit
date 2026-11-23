@@ -290,7 +290,8 @@ public struct AudioMeterConfiguration: Sendable, Equatable {
   /// whole frames; 0 publishes on every `process` call). Peak holds, maxima,
   /// clip counts and the PPM's per-publish maximum lose nothing in between;
   /// a reset publishes at once, and `AudioMeter.flush()` (or a zero-length
-  /// `process` call) publishes what is pending when a stream stops.
+  /// `process` call) publishes what is pending. Use `finishStream()` to include
+  /// the final reconstructed true peaks when the stream ends.
   public var publishInterval: Double
   /// The phase-correlation meter's integration time constant, in seconds
   /// (exponential). No standard sets it; 0.3 s follows the common

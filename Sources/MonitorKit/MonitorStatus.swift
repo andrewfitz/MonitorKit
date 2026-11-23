@@ -56,8 +56,8 @@ public enum MonitorUnavailableReason: Equatable, Sendable, CustomStringConvertib
   case noBands
   /// The mode measures light (stops), and the signal's transfer is unknown.
   case requiresKnownTransfer
-  /// Peaking is on, but the feed has no focus mask for this frame on this
-  /// surface's stage: call `analyze` with the same `FocusSettings.stage` first.
+  /// Peaking needs analysis of this frame with the surface's stage reading,
+  /// sensitivity and noise rejection.
   case focusNotAnalyzed
   /// Guides are hidden while the picture is magnified (`GuideSettings.hidesWhileMagnified`).
   case hiddenWhileMagnified
@@ -87,7 +87,7 @@ public enum MonitorUnavailableReason: Equatable, Sendable, CustomStringConvertib
       return "Not available for \(e.curve.rawValue) / \(e.gamut.rawValue)."
     case .noBands: return "No custom bands are defined."
     case .requiresKnownTransfer: return "Needs a known transfer function; this signal is unlabelled."
-    case .focusNotAnalyzed: return "No focus analysis for this frame and signal stage."
+    case .focusNotAnalyzed: return "No focus analysis matches this frame, signal stage and peaking thresholds."
     case .hiddenWhileMagnified: return "Hidden while magnified."
     case .requiresHDRSource: return "Needs a PQ or HLG signal."
     case .requiresHDROutput: return "Needs an HDR output."

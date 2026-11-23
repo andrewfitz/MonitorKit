@@ -96,6 +96,41 @@ final class RendererSceneAuditTests: XCTestCase {
     XCTAssertTrue(surface.status.isActive(.focusPeaking))
   }
 
+  func testClearingSourceWithdrawsGraticuleAndVisibleAndHiddenStatistics() throws {
+    let gpu = try requireGPU()
+    let source = MonitorSource()
+    let scope = MonitorScopeOverlay(source: source)
+    let hidden = MonitorScopeOverlay(source: source, isHidden: true)
+    let renderer = MonitorRenderer(
+      engine: gpu.engine, scene: MonitorScene(scopes: [scope, hidden]), scopeEngine: try gpu.scopeEngine())
+    let target = gpu.texture(.bgra8Unorm, 64, 36)
+    func draw() throws {
+      try renderer.update()
+      try gpu.run { try renderer.encode(target: target, into: $0) }
+    }
+    source.submit(try gpu.sdrFrame())
+    try draw()
+    XCTAssertFalse(try XCTUnwrap(scope.graticule).labels.isEmpty)
+    XCTAssertNil(hidden.viewport)
+    XCTAssertEqual(hidden.statisticsReader?.statistics?.pixelCount, 2304)
+    XCTAssertTrue(renderer.takeGraticuleChanges())
+    source.clear()
+    try draw()
+    XCTAssertNil(scope.graticule)
+    XCTAssertNil(scope.viewport)
+    XCTAssertNil(scope.statisticsReader)
+    XCTAssertNil(hidden.statisticsReader)
+    XCTAssertTrue(renderer.takeGraticuleChanges())
+    try draw()
+    XCTAssertFalse(renderer.takeGraticuleChanges())
+    source.submit(try gpu.sdrFrame(width: 32, height: 18))
+    try draw()
+    XCTAssertTrue(renderer.takeGraticuleChanges())
+    XCTAssertNotNil(scope.graticule)
+    XCTAssertEqual(scope.statisticsReader?.statistics?.pixelCount, 576)
+    XCTAssertEqual(hidden.statisticsReader?.statistics?.pixelCount, 576)
+  }
+
   func testHiddenScopeClearsPublishedViewportAndRestoresIt() throws {
     let gpu = try requireGPU()
     let source = MonitorSource()

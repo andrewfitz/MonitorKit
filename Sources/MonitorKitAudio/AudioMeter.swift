@@ -76,6 +76,7 @@ public final class AudioMeter: @unchecked Sendable {
 
   struct Scalars {
     var tickPosition = 0
+    var rmsTicksClosed = 0
     var rmsHead = 0
     /// Ticks closed into the RMS ring since reset, up to its length; older
     /// entries read as 0, so a reset does not have to clear the ring.
@@ -90,6 +91,9 @@ public final class AudioMeter: @unchecked Sendable {
     /// into the filter that a stream already running when metering starts
     /// never had; a stream that starts from silence starts at 0 either way.
     var primed = false
+    /// Real samples available for terminal true-peak reconstruction, capped
+    /// once every pending instant falls inside the recording.
+    var tailFrames = 0
     /// The correlation meter's exponentially weighted sums: L, R, L·R, L², R²,
     /// and the weights' own sum, which divides them into means (it is below 1
     /// for the first few time constants after a start or reset).
@@ -136,7 +140,6 @@ public final class AudioMeter: @unchecked Sendable {
   private let runsFIR: Bool
   private let runsSamplePeak: Bool
   private let runsTruePeak: Bool
-  private let runsPeakBallistics: Bool
   private let runsPPMFromPhases: Bool
   private let runsVU: Bool
   private let runsPPM: Bool
@@ -150,15 +153,14 @@ public final class AudioMeter: @unchecked Sendable {
   private let correlationTakes: UnsafeMutablePointer<Double>
   /// Double input and weighted-input scratch for the two selected channels.
   private let correlationScratch: UnsafeMutablePointer<Double>
-  private let tickFrames: Int
+  private let grid: MeterTickGrid
   private let publishFrames: Int
   private let rmsTicks: Int
   private let rmsGain: Double
-  private let vuGain: Double
+  private let vuGainDB: Double
   private let ppm: PPMCoefficients
-  private let ppmGain: Double
-  private let decayPerFrame: Double
-  private let holdFrames: Int
+  private let ppmGainDB: Double
+  private let peakBallistics: PeakBallistics
   private let clipLevel: Float
 
   /// A meter for `configuration`, with every buffer it will use allocated here.
@@ -171,7 +173,6 @@ public final class AudioMeter: @unchecked Sendable {
     channelCount = configuration.channelCount
     runsSamplePeak = kinds.contains(.samplePeak)
     runsTruePeak = kinds.contains(.truePeak)
-    runsPeakBallistics = runsSamplePeak || runsTruePeak
     runsVU = kinds.contains(.vu)
     runsPPM = kinds.contains(.ppm)
     runsRMS = kinds.contains(.rms)
@@ -251,9 +252,9 @@ public final class AudioMeter: @unchecked Sendable {
     vuStates = .allocate(capacity: 2 * channelCount)
     vuStates.initialize(repeating: 0, count: 2 * channelCount)
 
-    (tickFrames, _) = meterTick(sampleRate: fs)
+    grid = MeterTickGrid(sampleRate: fs)
     publishFrames = max(1, Int((configuration.publishInterval * fs).rounded()))
-    rmsTicks = max(1, Int((configuration.rmsWindow * fs / Double(tickFrames)).rounded()))
+    rmsTicks = max(1, Int((configuration.rmsWindow * fs / grid.nominalFrames).rounded()))
     rmsRing = .allocate(capacity: runsRMS ? channelCount * rmsTicks : 1)
     rmsRing.initialize(repeating: 0, count: runsRMS ? channelCount * rmsTicks : 1)
     rmsWindows = .allocate(capacity: channelCount)
@@ -263,14 +264,12 @@ public final class AudioMeter: @unchecked Sendable {
     scalars.initialize(to: Scalars(primed: stage.history == 0))
 
     // A sine's rectified mean is 2/pi of its peak; 0 VU is a sine peaking at the reference.
-    vuGain = Double.pi / 2 / pow(10, configuration.vuReference.dBFS / 20)
+    vuGainDB = 20 * log10(Double.pi / 2) - configuration.vuReference.dBFS
 
     ppm = validatedPPM
-    ppmGain = ppm.calibration / pow(10, configuration.ppmAlignment.dBFS / 20)
+    ppmGainDB = 20 * log10(ppm.calibration) - configuration.ppmAlignment.dBFS
 
-    decayPerFrame = -configuration.peakDecayRate * log(10) / (20 * fs)
-    let hold = configuration.peakHoldTime * fs
-    holdFrames = hold >= Double(Int.max / 2) ? Int.max : Int(hold.rounded())
+    peakBallistics = PeakBallistics(configuration: configuration, capacity: Self.chunkFrames)
     clipLevel = Float(pow(10, configuration.clipLevelDBFS / 20))
   }
 
@@ -293,6 +292,7 @@ public final class AudioMeter: @unchecked Sendable {
     stage.deallocate()
     interpolator.deallocate()
     ppm.deallocate()
+    peakBallistics.deallocate()
     staging.deallocate()
     channelState.deallocate()
     ppmStates.deallocate()
@@ -324,52 +324,69 @@ public final class AudioMeter: @unchecked Sendable {
   // MARK: Input
 
   /// Deinterleaved Float32, e.g. `AVAudioPCMBuffer.floatChannelData`.
+  /// Zero-frame calls do not read input pointers and still apply pending resets.
   public func process(planar channels: UnsafePointer<UnsafeMutablePointer<Float>>, frameCount: Int) {
-    forEachIndex(channelCount) { stage.bindPlanar($0, channels[$0]) }
+    if frameCount > 0 {
+      forEachIndex(channelCount) { stage.bindPlanar($0, channels[$0]) }
+    }
     run(frameCount, .float32)
   }
 
   /// Deinterleaved Float32 from read-only channel pointers.
   public func process(planar channels: UnsafePointer<UnsafePointer<Float>>, frameCount: Int) {
-    forEachIndex(channelCount) { stage.bindPlanar($0, channels[$0]) }
+    if frameCount > 0 {
+      forEachIndex(channelCount) { stage.bindPlanar($0, channels[$0]) }
+    }
     run(frameCount, .float32)
   }
 
   /// Deinterleaved Int16, full scale 32768, e.g. `AVAudioPCMBuffer.int16ChannelData`.
   public func process(planar channels: UnsafePointer<UnsafeMutablePointer<Int16>>, frameCount: Int) {
-    forEachIndex(channelCount) { stage.bindPlanar($0, channels[$0]) }
+    if frameCount > 0 {
+      forEachIndex(channelCount) { stage.bindPlanar($0, channels[$0]) }
+    }
     run(frameCount, .int16)
   }
 
   /// Deinterleaved Int32, full scale 2^31, e.g. `AVAudioPCMBuffer.int32ChannelData`.
   public func process(planar channels: UnsafePointer<UnsafeMutablePointer<Int32>>, frameCount: Int) {
-    forEachIndex(channelCount) { stage.bindPlanar($0, channels[$0]) }
+    if frameCount > 0 {
+      forEachIndex(channelCount) { stage.bindPlanar($0, channels[$0]) }
+    }
     run(frameCount, .int32)
   }
 
   /// Interleaved samples; `frameStride` (default: the channel count) is the
   /// number of samples per frame, so the first channels of a wider stream can be metered.
   public func process(interleaved samples: UnsafePointer<Float>, frameCount: Int, frameStride: Int? = nil) {
-    stage.bindInterleaved(samples, format: .float32, frameStride: checkedStride(frameStride))
+    if frameCount > 0 {
+      stage.bindInterleaved(samples, format: .float32, frameStride: checkedStride(frameStride))
+    }
     run(frameCount, .float32)
   }
 
   /// Interleaved Int16 (full scale 32768); `frameStride` as for Float32.
   public func process(interleaved samples: UnsafePointer<Int16>, frameCount: Int, frameStride: Int? = nil) {
-    stage.bindInterleaved(samples, format: .int16, frameStride: checkedStride(frameStride))
+    if frameCount > 0 {
+      stage.bindInterleaved(samples, format: .int16, frameStride: checkedStride(frameStride))
+    }
     run(frameCount, .int16)
   }
 
   /// Interleaved Int32 (full scale 2^31); `frameStride` as for Float32.
   public func process(interleaved samples: UnsafePointer<Int32>, frameCount: Int, frameStride: Int? = nil) {
-    stage.bindInterleaved(samples, format: .int32, frameStride: checkedStride(frameStride))
+    if frameCount > 0 {
+      stage.bindInterleaved(samples, format: .int32, frameStride: checkedStride(frameStride))
+    }
     run(frameCount, .int32)
   }
 
   /// Core Audio buffers, planar or interleaved; channels are taken in order
   /// and channels the list does not carry read as silence.
   public func process(bufferList: UnsafePointer<AudioBufferList>, frameCount: Int, format: AudioSampleFormat) {
-    stage.bindBufferList(bufferList, frameCount: frameCount, format: format)
+    if frameCount > 0 {
+      stage.bindBufferList(bufferList, frameCount: frameCount, format: format)
+    }
     run(frameCount, format)
   }
 
@@ -448,12 +465,45 @@ public final class AudioMeter: @unchecked Sendable {
   public var isLoudnessPaused: Bool { loudnessPaused.load(ordering: .relaxed) }
 
   /// Publishes audio held back by `publishInterval` and applies pending
-  /// resets, without new input: call it when a stream stops, so its last
-  /// few milliseconds (and any over in them) reach `snapshot()`. Producer
+  /// resets without new input. The stream can continue on the same filter
+  /// history and tick grid. At end of stream use `finishStream()`. Producer
   /// thread only, like `process`; does nothing when nothing is pending.
   public func flush() {
     let reset = applyResetRequests()
     if reset || scalars.pointee.framesSincePublish > 0 { publish() }
+  }
+
+  /// Publishes the final readings, including true-peak reconstruction up to
+  /// the last real sample. The FIR assumes digital silence beyond the end.
+  /// Frame count, loudness and other meters measure only the real audio.
+  /// Producer thread only. Repeating this without new input is a no-op.
+  public func finishStream() {
+    let reset = applyResetRequests()
+    var changed = false
+    let realFrames = scalars.pointee.tailFrames
+    if realFrames > 0 {
+      forEachIndex(channelCount) { c in
+        let peak = Double(interpolator.terminalPeak(
+          stage.samples(c), realFrames: realFrames, scratch: UnsafePointer(phases)))
+        let s = channelState + c
+        if peak > s.pointee.trueBar {
+          s.pointee.trueBar = peak
+          changed = true
+        }
+        if peak > s.pointee.trueHold {
+          s.pointee.trueHold = peak
+          s.pointee.trueHoldAge = 0
+          changed = true
+        }
+        if peak > s.pointee.trueMax {
+          s.pointee.trueMax = peak
+          changed = true
+        }
+      }
+      scalars.pointee.tailFrames = 0
+    }
+    let pending = scalars.pointee.framesSincePublish > 0
+    if pending || reset || changed { publish(preservePPM: !pending && !reset) }
   }
 
   /// The resets requested after `applied` (those the publish includes),
@@ -490,21 +540,21 @@ public final class AudioMeter: @unchecked Sendable {
     var offset = 0
     while offset < frameCount {
       let n = min(frameCount - offset, Self.chunkFrames)
-      // The decay factor depends only on this chunk's length. Compute it once
-      // instead of paying for the same exp() once per channel group member.
-      let decay = runsPeakBallistics ? exp(decayPerFrame * Double(n)) : 0
       stage.load(offset: offset, frames: n, format: format)
       if !scalars.pointee.primed {
         forEachIndex(channelCount) { stage.primeHistory($0) }
         scalars.pointee.primed = true
       }
-      forEachIndex(groupCount) { measure(group: $0, frames: n, decay: decay) }
+      forEachIndex(groupCount) { measure(group: $0, frames: n) }
       if let pair = correlationPair { correlate(pair, frames: n) }
-      advanceRMSTicks(n)
+      if runsRMS { accumulateRMS(frames: n) }
       scalars.pointee.ppmCarry = (scalars.pointee.ppmCarry + n) % ppmInput.fold
       loudness?.process(frames: n)
       // Last: the interpolator and a folded PPM read into the history.
       if stage.history > 0 { forEachIndex(channelCount) { stage.carryHistory($0, frames: n) } }
+      if runsTruePeak {
+        scalars.pointee.tailFrames = min(TruePeakInterpolator.tailFrames + 1, scalars.pointee.tailFrames + n)
+      }
       offset += n
     }
     scalars.pointee.frameCount &+= UInt64(frameCount)
@@ -516,7 +566,7 @@ public final class AudioMeter: @unchecked Sendable {
   }
 
   /// Every meter of four channels over the current chunk.
-  private func measure(group g: Int, frames n: Int, decay: Double) {
+  private func measure(group g: Int, frames n: Int) {
     let first = g * 4
     let width = min(4, channelCount - first)
     forEachIndex(width) { measurePeaks(channel: first + $0, slot: $0, frames: n) }
@@ -525,7 +575,7 @@ public final class AudioMeter: @unchecked Sendable {
         ppmStates + first, channels: width, lanes: UnsafePointer(ppmLanes), envelopes: UnsafePointer(ppmEnvelopes),
         offset: 0, count: (scalars.pointee.ppmCarry + n) / ppmInput.fold)
     }
-    forEachIndex(width) { measureLevels(channel: first + $0, slot: $0, frames: n, decay: decay) }
+    forEachIndex(width) { measureLevels(channel: first + $0, slot: $0, frames: n) }
   }
 
   /// The sample peak and, through the group's scratch slot, the interpolated
@@ -571,30 +621,29 @@ public final class AudioMeter: @unchecked Sendable {
   }
 
   /// VU, RMS, peak ballistics and clip count.
-  private func measureLevels(channel c: Int, slot: Int, frames n: Int, decay: Double) {
+  private func measureLevels(channel c: Int, slot: Int, frames n: Int) {
     let x = UnsafePointer(stage.samples(c))
     let length = vDSP_Length(n)
     let s = channelState + c
-    if runsRMS { accumulateRMS(channel: c, frames: n) }
+    let peak = s.pointee.chunkPeak
+    let truePeak = s.pointee.chunkTruePeak
+    if runsSamplePeak {
+      peakBallistics.advance(x, count: n, maximum: peak,
+        bar: &s.pointee.sampleBar, hold: &s.pointee.sampleHold, age: &s.pointee.sampleHoldAge)
+    }
+    if runsTruePeak {
+      let envelope = envelopes[slot]
+      vDSP_vmaxmg(x, 1, envelope, 1, envelope, 1, length)
+      peakBallistics.advance(envelope, count: n, maximum: truePeak,
+        bar: &s.pointee.trueBar, hold: &s.pointee.trueHold, age: &s.pointee.trueHoldAge)
+      if Double(truePeak) > s.pointee.trueMax { s.pointee.trueMax = Double(truePeak) }
+    }
     if runsVU {
       // The envelope slot is free once the true peak and PPM have run.
       vDSP_vabs(x, 1, envelopes[slot], 1, length)
       s.pointee.vuReading = vu.advance(vuStates + 2 * c, rectified: envelopes[slot], count: n)
     }
 
-    let peak = s.pointee.chunkPeak
-    let truePeak = s.pointee.chunkTruePeak
-    if runsSamplePeak {
-      Self.ballistics(
-        bar: &s.pointee.sampleBar, hold: &s.pointee.sampleHold, age: &s.pointee.sampleHoldAge,
-        peak: Double(peak), decay: decay, decayPerFrame: decayPerFrame, frames: n, holdFrames: holdFrames)
-    }
-    if runsTruePeak {
-      Self.ballistics(
-        bar: &s.pointee.trueBar, hold: &s.pointee.trueHold, age: &s.pointee.trueHoldAge,
-        peak: Double(truePeak), decay: decay, decayPerFrame: decayPerFrame, frames: n, holdFrames: holdFrames)
-      if Double(truePeak) > s.pointee.trueMax { s.pointee.trueMax = Double(truePeak) }
-    }
     if peak >= clipLevel {
       // vclipc counts strictly outside its bounds, so these count |x| >= clipLevel.
       var low = -clipLevel.nextDown
@@ -610,57 +659,36 @@ public final class AudioMeter: @unchecked Sendable {
     }
   }
 
-  /// Instant attack; after `holdFrames` the hold marker falls with the bar.
-  @inline(__always) private static func ballistics(
-    bar: inout Double, hold: inout Double, age: inout Int,
-    peak: Double, decay: Double, decayPerFrame: Double, frames: Int, holdFrames: Int
-  ) {
-    let decayed = bar * decay
-    bar = peak > decayed ? peak : decayed
-    if peak >= hold {
-      hold = peak
-      age = 0
-    } else {
-      let remainingHold = holdFrames - age
-      let releasedFrames = max(0, frames - remainingHold)
-      age = frames >= remainingHold ? holdFrames : age + frames
-      if releasedFrames > 0 {
-        // Only audio after the hold expires contributes to its fall. Using
-        // the whole chunk releases early, including at the exact boundary.
-        let released = hold * (releasedFrames == frames ? decay : exp(decayPerFrame * Double(releasedFrames)))
-        hold = bar > released ? bar : released
-      }
-    }
-  }
-
-  /// Adds the chunk's energy to channel c's RMS ticks, closing each tick into
-  /// the ring and the running window sum; `advanceRMSTicks` then moves the
-  /// shared tick position the same way. A tick is 3840 samples at most on
-  /// the standard rates (5 ms at 768 kHz), 100 ms at a rate whose 100 ms block
-  /// has no small divisor; its Float sum is good to about 1e-5 dB either way.
-  private func accumulateRMS(channel c: Int, frames n: Int) {
-    let x = stage.samples(c)
-    let s = channelState + c
-    let ring = rmsRing + c * rmsTicks
-    var position = scalars.pointee.tickPosition
-    var head = scalars.pointee.rmsHead
-    var filled = scalars.pointee.rmsFilled
+  /// Accumulate each channel over the same tick boundaries. The ring holds
+  /// summed energy, so a longer tick carries its actual sample weight.
+  private func accumulateRMS(frames n: Int) {
+    let s = scalars
     var i = 0
     while i < n {
-      let m = min(n - i, tickFrames - position)
-      var energy: Float = 0
-      vDSP_svesq(x + i, 1, &energy, vDSP_Length(m))
-      s.pointee.rmsEnergy += Double(energy)
+      let tickFrames = grid.frames(startingAt: s.pointee.rmsTicksClosed)
+      let remaining = tickFrames - s.pointee.tickPosition
+      let m = min(n - i, remaining)
+      let closed = m == remaining
+      forEachIndex(channelCount) { c in
+        var energy: Float = 0
+        vDSP_svesq(stage.samples(c) + i, 1, &energy, vDSP_Length(m))
+        channelState[c].rmsEnergy += Double(energy)
+        if closed {
+          let entry = rmsRing + c * rmsTicks + s.pointee.rmsHead
+          let new = channelState[c].rmsEnergy
+          rmsWindows[c].replace(s.pointee.rmsFilled == rmsTicks ? entry.pointee : 0, with: new)
+          entry.pointee = new
+          channelState[c].rmsEnergy = 0
+        }
+      }
       i += m
-      position += m
-      if position == tickFrames {
-        let new = s.pointee.rmsEnergy
-        rmsWindows[c].replace(filled == rmsTicks ? ring[head] : 0, with: new)
-        ring[head] = new
-        s.pointee.rmsEnergy = 0
-        position = 0
-        head = head + 1 == rmsTicks ? 0 : head + 1
-        if filled < rmsTicks { filled += 1 }
+      if closed {
+        s.pointee.tickPosition = 0
+        s.pointee.rmsTicksClosed += 1
+        s.pointee.rmsHead = (s.pointee.rmsHead + 1) % rmsTicks
+        s.pointee.rmsFilled = min(s.pointee.rmsFilled + 1, rmsTicks)
+      } else {
+        s.pointee.tickPosition += m
       }
     }
   }
@@ -719,17 +747,9 @@ public final class AudioMeter: @unchecked Sendable {
     return Float(min(1, max(-1, c)))
   }
 
-  private func advanceRMSTicks(_ n: Int) {
-    let total = scalars.pointee.tickPosition + n
-    let closed = total / tickFrames
-    scalars.pointee.tickPosition = total % tickFrames
-    scalars.pointee.rmsHead = (scalars.pointee.rmsHead + closed) % rmsTicks
-    scalars.pointee.rmsFilled = min(rmsTicks, scalars.pointee.rmsFilled + closed)
-  }
-
-  private func publish() {
+  private func publish(preservePPM: Bool = false) {
     let kinds = configuration.meters
-    let window = Double(rmsTicks * tickFrames)
+    let window = Double(grid.frames(startingAt: scalars.pointee.rmsTicksClosed - rmsTicks, ticks: rmsTicks))
     scalars.pointee.publishes &+= 1
     scalars.pointee.framesSincePublish = 0
     staging.pointee.readings.sequence = scalars.pointee.publishes
@@ -747,10 +767,14 @@ public final class AudioMeter: @unchecked Sendable {
         levels.truePeakMax = amplitudeDB(s.pointee.trueMax)
       }
       if runsRMS { levels.rms = amplitudeDB((rmsWindows[c].energy / window).squareRoot() * rmsGain) }
-      if runsVU { levels.vu = amplitudeDB(max(s.pointee.vuReading, 0) * vuGain) }
+      if runsVU { levels.vu = amplitudeDB(max(s.pointee.vuReading, 0), offset: vuGainDB) }
       if runsPPM {
-        levels.ppm = amplitudeDB(ppmStates[c].top * ppmGain)
-        ppm.restart(&ppmStates[c])
+        if preservePPM {
+          levels.ppm = staging.pointee.readings.channels[c].ppm
+        } else {
+          levels.ppm = amplitudeDB(ppmStates[c].top, offset: ppmGainDB)
+          ppm.restart(&ppmStates[c])
+        }
       }
       staging.pointee.readings.channels[c] = levels
     }
@@ -770,6 +794,7 @@ public final class AudioMeter: @unchecked Sendable {
     // folded PPM's step there and starts the K-weighting from it.
     defer {
       if requested.discontinuities != applied.discontinuities {
+        scalars.pointee.tailFrames = 0
         scalars.pointee.primed = stage.history == 0
         scalars.pointee.ppmCarry = 0
         loudness?.primeFilters()
@@ -787,6 +812,7 @@ public final class AudioMeter: @unchecked Sendable {
       return true
     }
     if requested.peaks != applied.peaks {
+      scalars.pointee.tailFrames = 0
       forEachIndex(channelCount) { c in
         channelState[c].sampleHold = channelState[c].sampleBar
         channelState[c].sampleHoldAge = 0

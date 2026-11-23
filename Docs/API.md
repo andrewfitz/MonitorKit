@@ -517,6 +517,8 @@ Compiled scope kernels and render pipelines for one device (`Sendable`).
 | `ScopeSettings`, `ScopeDisplay` and their enums | [FEATURES §3](FEATURES.md#3-scopes). `ScopeSettings.plainWaveform(mode:stage:)`, `atNativeResolution(viewportWidth:viewportHeight:)` (bins from the drawn size, so a scope is accurate at any size), `accumulationKey` |
 | `ScopeGraticule`, `ScopeLabel`, `ScopeTick`, `VectorscopeTarget`, `ScopeContext`, `ScopeLevelAxis`, `ScopeLevelRange`, `ScopeTransfer`, `VectorscopeGeometry`, `WaveformScale.ticks(range:levelRange:)` | Graticule geometry and labels, for a UI drawing its own text |
 
+A renderer tracks graticule and trace writes encoded into a classic command buffer and retries discarded writes on the next prepare or render. An unchanged trace can require one extra resolve when its producer has already been released. For Metal 4, call `ScopeRenderer.invalidateGPUResults()` on its encoding thread after abandoning the submission or receiving GPU failure feedback. On either path, repeat any accumulation lost with the buffer so the renderer can resolve valid bins again.
+
 ```swift
 import Metal
 import MonitorKit
@@ -563,7 +565,7 @@ Pure Swift and Accelerate. Realtime-safe: everything is allocated at init; `proc
 
 | Type | Purpose |
 | --- | --- |
-| `AudioMeter` | `init(configuration:)`, `init(sampleRate:channelCount:)` (throws `AudioMeterError`). `process(planar:frameCount:)` (Float32, Int16, Int32 pointers), `process(interleaved:frameCount:frameStride:)`, `process(bufferList:frameCount:format:)`; `snapshot()`, `publishCount`, `resetPeaks()`, `resetLoudness()`, `reset()`, `pauseLoudness()`, `resumeLoudness()`, `isLoudnessPaused`, `flush()` |
+| `AudioMeter` | `init(configuration:)`, `init(sampleRate:channelCount:)` (throws `AudioMeterError`). `process(planar:frameCount:)` (Float32, Int16, Int32 pointers), `process(interleaved:frameCount:frameStride:)`, `process(bufferList:frameCount:format:)`; `snapshot()`, `publishCount`, `resetPeaks()`, `resetLoudness()`, `reset()`, `pauseLoudness()`, `resumeLoudness()`, `isLoudnessPaused`, `flush()` (publish pending audio), `finishStream()` (include the final reconstructed true peaks) |
 | `AudioMeterConfiguration` | [FEATURES §8](FEATURES.md#8-audio); `ppmBallistics`, `loudnessChannels` |
 | `AudioMeterSnapshot` | `sequence`, `frameCount`, `channelCount`, `channels` (`InlineArray<16, AudioChannelLevels>`, or `snapshot[channel:]`), `loudness` (`LoudnessSnapshot`), `programmeChannelMask`, `maximumTruePeak`, `programmeMaximumTruePeak` (R 128 Max TP), `vuReferenceDBFS`, `ppmAlignmentDBFS`, `correlation` |
 | `AudioChannelLevels`, `LoudnessSnapshot` | dBFS / dBTP / VU / PPM readings, clip count; M, S, I, LRA, maxima, duration |

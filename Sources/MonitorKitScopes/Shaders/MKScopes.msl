@@ -21,6 +21,7 @@ struct mk_ScopeParams {
   float4 weights; // xyz: luma weights, w: 1 to use the decoded transport luma (no LUT, frame matrix)
   float4 chroma;  // x: 1 / (2 (1 - kb)), y: 1 / (2 (1 - kr)), z: vectorscope bins per unit chroma, w: half side
   float4 clip;    // x: high, y: low threshold in percent, both inclusive, compared as the picture's clip indicators do
+  float4 stageWeights; // the last LUT's declared luma weights, or Rec.709
 };
 
 constant uint MK_SCOPE_WAVEFORM = 0, MK_SCOPE_VECTOR = 1, MK_SCOPE_HISTOGRAM = 2;
@@ -57,14 +58,11 @@ struct mk_ScopeSample {
   float y, stageY;
 };
 
-// Rec. ITU-R BT.709-6 item 3.2 luma weights, which the picture pass gives a LUT result.
-constant float3 MK_SCOPE_LUMA_709 = float3(.2126f, .7152f, .0722f);
-
 // With no LUT on the stage and the frame's own matrix, the scope's Y' is the
 // decoded transport luma, exact at integral codes; otherwise mk_luma, exact for
 // neutrals. The statistics' Y' follows the picture's zebras, IRE and clip
 // indicators (mk_stageLuma) whatever the colorimetry: the transport luma where
-// no LUT touched the stage, Rec.709 Y' of a LUT result.
+// no LUT touched the stage, the declared Y' of a LUT result.
 inline mk_ScopeSample mk_scopeSample(texture2d<uint, access::read> packed, texture2d<float, access::read> luma,
                                      texture2d<float, access::read> chroma, texture3d<float, access::sample> burnLUT,
                                      texture3d<float, access::sample> monitorLUT, uint2 xy,
@@ -75,7 +73,7 @@ inline mk_ScopeSample mk_scopeSample(texture2d<uint, access::read> packed, textu
   bool burned = p.shape.z >= 1 && p.luts.x, monitored = p.shape.z == 2 && p.luts.y;
   if (burned) rgb = mk_applyLUT(rgb, burnLUT, burn);
   if (monitored) rgb = mk_applyLUT(rgb, monitorLUT, monitor);
-  float stageY = burned || monitored ? mk_luma(rgb, MK_SCOPE_LUMA_709) : d.w;
+  float stageY = burned || monitored ? mk_luma(rgb, p.stageWeights.xyz) : d.w;
   return {rgb, p.weights.w != 0 ? d.w : mk_luma(rgb, p.weights.xyz), stageY};
 }
 
@@ -938,10 +936,13 @@ fragment float4 mk_scopeFragment(mk_ScopeVertexOut in [[stage_in]], constant mk_
   light = min(light, float3(1));
   color = min(color + light, float3(1));
   alpha = alpha + (1 - alpha) * max(light.r, max(light.g, light.b));
-  // Encoded unpremultiplied, so coverage and opacity blend as on an SDR layer.
-  // Black (most of a scope) stays black in every encoding.
-  if (d.encode.x != 0 && alpha > 0 && any(color > 0)) color = mk_scopeEncode(color / alpha, d) * alpha;
-  // sRGB targets re-encode on store; exact where the scope is opaque.
-  if (d.flags.y) color = float3(mk_srgbToLinear(color.r), mk_srgbToLinear(color.g), mk_srgbToLinear(color.b));
+  // Convert straight colour, then premultiply in the attachment's blend space.
+  // Black (including zero coverage) stays black in every encoding.
+  if ((d.encode.x != 0 || d.flags.y) && alpha > 0 && any(color > 0)) {
+    color /= alpha;
+    if (d.encode.x != 0) color = mk_scopeEncode(color, d);
+    if (d.flags.y) color = float3(mk_srgbToLinear(color.r), mk_srgbToLinear(color.g), mk_srgbToLinear(color.b));
+    color *= alpha;
+  }
   return float4(color, alpha);
 }

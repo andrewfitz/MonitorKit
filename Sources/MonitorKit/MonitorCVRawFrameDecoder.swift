@@ -14,6 +14,9 @@ public final class MonitorCVRawFrameDecoder {
   private let decoder: MonitorRawFrameDecoder
 
   public init(device: MTLDevice, residency: MonitorResidency) throws {
+    guard residency.set.device.registryID == device.registryID else {
+      throw MonitorKitError.invalidFrame("Raw monitor residency and decoder must use the same device.")
+    }
     self.device = device; self.residency = residency
     decoder = try MonitorRawFrameDecoder(device: device)
   }
@@ -38,6 +41,9 @@ public final class MonitorCVRawFrameDecoder {
     _ image: CVPixelBuffer, signal: SignalDescription, geometry: MonitorFrameGeometry? = nil,
     submission: MonitorSubmission
   ) throws -> MonitorFrame {
+    guard submission.commandBuffer.device.registryID == device.registryID else {
+      throw MonitorKitError.invalidFrame("Raw monitor submission and decoder must use the same device.")
+    }
     let type = CVPixelBufferGetPixelFormatType(image)
     guard let format = Self.format(for: type) else { throw MonitorKitError.unsupportedPixelFormat(type) }
     guard let surface = CVPixelBufferGetIOSurface(image)?.takeUnretainedValue() else {
@@ -48,8 +54,13 @@ public final class MonitorCVRawFrameDecoder {
       throw MonitorKitError.invalidFrame(
         "the geometry is \(geometry.width)×\(geometry.height), the pixel buffer \(width)×\(height)")
     }
-    guard width > 0, height > 0, width <= Int(UInt32.max) / 8, height <= Int(UInt32.max) else {
+    guard width > 0, height > 0,
+      width <= decoder.maximumTextureDimension, height <= decoder.maximumTextureDimension else {
       throw MonitorKitError.invalidFrame("Invalid raw monitor dimensions.")
+    }
+    // A one-pixel UYVA envelope would otherwise create a zero-width Metal view.
+    if (format == .uyva || format == .p216 || format == .pa16) && !width.isMultiple(of: 2) {
+      throw MonitorKitError.invalidFrame("Raw 4:2:2 frames require an even width.")
     }
     let planar = CVPixelBufferIsPlanar(image)
     let count = CVPixelBufferGetPlaneCount(image)
@@ -65,9 +76,8 @@ public final class MonitorCVRawFrameDecoder {
       switch format {
       case .r210: pixelFormat = .rgba8Uint; texWidth = width; rows = height; bytesPerPixel = 4
       case .r12l:
-        // Eight unchanged packed bytes per texel keep every admitted video
-        // width (through 16,384) below the 16,384-texel limit. Copy the padded
-        // final texel; unpacking reads only ceil(width*36/8) native bytes.
+        // Eight packed bytes per texel keep this view narrower than the output.
+        // Copy the padded final texel; unpacking reads only ceil(width*36/8) bytes.
         pixelFormat = .rgba16Uint; texWidth = ((width * 36 + 7) / 8 + 7) / 8
         rows = height; bytesPerPixel = 8
       case .uyva:
@@ -103,17 +113,14 @@ public final class MonitorCVRawFrameDecoder {
       }
       sources.append(texture); offsets.append(total); strides.append(stride); total += bytes
     }
+    guard total <= device.maxBufferLength else {
+      throw MonitorKitError.invalidFrame("Raw monitor staging exceeds the device's maximum buffer length.")
+    }
     guard let input = device.makeBuffer(length: total, options: .storageModePrivate),
       let copy = submission.commandBuffer.makeComputeCommandEncoder() else {
       throw MonitorKitError.gpu("Raw monitor GPU staging allocation or encoder unavailable.")
     }
     residency.observe(submission)
-    // Under the residency's lock: a completion on another thread removes from the same set.
-    residency.withSet { set in
-      set.addAllocation(input)
-      for source in sources { set.addAllocation(source) }
-      set.commit()
-    }
     for (plane, source) in sources.enumerated() {
       copy.copy(sourceTexture: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
         sourceSize: MTLSize(width: source.width, height: source.height, depth: 1), destinationBuffer: input,
@@ -122,24 +129,20 @@ public final class MonitorCVRawFrameDecoder {
     copy.endEncoding()
     // Alpha storage remains retained and validated even though v1 ignores it.
     if format == .uyva { offsets.removeLast(); strides.removeLast() }
-    var made: MonitorRawFrameDecoder.Encoding?
-    var failure: (any Error)?
-    // The decoder adds its own allocations to the set, so its encode holds the lock too.
-    residency.withSet { set in
-      do {
-        made = try decoder.encode(input: input, format: format, width: width, height: height,
-          offsets: offsets, strides: strides, signal: signal, commandBuffer: submission.commandBuffer, residency: set)
-        set.commit()
-      } catch {
-        failure = error
-      }
-    }
-    guard let encoded = made else {
+    let encoded: MonitorRawFrameDecoder.Encoding
+    do {
+      encoded = try decoder.encode(input: input, format: format, width: width, height: height,
+        offsets: offsets, strides: strides, signal: signal, commandBuffer: submission.commandBuffer)
+    } catch {
+      // The copy is already encoded, even when the decoder rejects its input.
+      residency.add(sources + [input as any MTLAllocation])
       residency.retire(image, resident: nil)
       residency.retire(input, resident: input)
       for source in sources { residency.retire(source, resident: source) }
-      throw failure ?? MonitorKitError.gpu("Raw monitor decode failed.")
+      throw error
     }
+    // The staging input is shared by both encoders and occurs once in allocations.
+    residency.add(sources + encoded.allocations)
     let owner = Ownership(image: image, encoded: encoded, sources: sources, residency: residency)
     let g = geometry ?? MonitorFrame.geometry(of: image)
     return try MonitorFrame(layout: encoded.frame.layout, width: width, height: height,

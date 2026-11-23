@@ -45,6 +45,10 @@ public enum PixelLayout: Hashable, Codable, Sendable {
     }
   }
 
+  /// Normalized float RGB uses a full-range 10-bit container for log math and code labels.
+  package var codeBitDepth: Int { isFloat ? 10 : bitDepth }
+  package func effectiveRange(_ declared: CodeRange) -> CodeRange { isFloat ? .full : declared }
+
   public var subsampling: ChromaSubsampling {
     switch self {
     case .v210, .uyvy8, .yuyv8: return .s422

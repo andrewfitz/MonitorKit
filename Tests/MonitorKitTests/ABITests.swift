@@ -79,6 +79,7 @@ final class ABITests: XCTestCase {
       ("falseColorPipeline", o(\.falseColorPipeline)), ("falseColorFlags", o(\.falseColorFlags)),
       ("falseColorToneMap", o(\.falseColorToneMap)), ("falseColorWeights", o(\.falseColorWeights)),
       ("falseColorToTarget", o(\.falseColorToTarget)), ("falseColorTransform", o(\.falseColorTransform)),
+      ("burnInLUTWeights", o(\.burnInLUTWeights)), ("monitorLUTWeights", o(\.monitorLUTWeights)),
     ])
     let members = try XCTUnwrap(try fragmentBuffers()[3]?.bufferStructType?.members)
     let arrays = [

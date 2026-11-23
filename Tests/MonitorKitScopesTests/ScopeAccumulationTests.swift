@@ -287,6 +287,10 @@ final class ScopeAccumulationTests: XCTestCase {
     XCTAssertEqual(params(.output, nil, nil).weights.x, Float(0.2627))
     XCTAssertEqual(params(.output, lut, nil).weights.x, Float(0.2126))
     XCTAssertEqual(params(.monitor, nil, lut).weights.x, Float(0.2126))
+    let hdr = lut.withOutputSignal(SignalDescription(matrix: .bt2020, encoding: .display(.pq), primaries: .rec2020))
+    XCTAssertEqual(params(.output, hdr, nil).weights.x, Float(0.2627))
+    XCTAssertEqual(params(.monitor, hdr, lut).weights.x, Float(0.2126))
+    XCTAssertEqual(params(.monitor, lut, hdr).weights.x, Float(0.2627))
   }
 
   // MARK: vectorscope targets

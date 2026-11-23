@@ -130,6 +130,8 @@ public final class MonitorPass {
     var signal: SignalDescription
     var transform: DisplayTransformSettings
     var monitorStageHasLUT: Bool
+    var range: CodeRange
+    var bitDepth: Int
   }
 
   struct GuideKey: Equatable {
@@ -290,18 +292,12 @@ public final class MonitorPass {
     let output = outputColor.normalized()
     let maskValid =
       s.focus.enabled && !s.clean && !frame.isProcessed
-      && feed.hasFocusMask(for: frame, stage: s.focus.stage, monitorLUTEnabled: s.monitorLUT)
+      && feed.hasFocusMask(for: frame, focus: s.focus, monitorLUTEnabled: s.monitorLUT)
     // The declared ratio, a broken one as 0 (equality-stable): the key's geometry
     // reports it as unusable and lays the picture out with square pixels.
     let par = MonitorFrame.stablePixelAspectRatio(frame.declaredPixelAspectRatio)
     // The aperture as shown (finite, inside the frame), so a NaN cannot force a rebuild per frame.
     let aperture = frame.cleanAperture == nil ? nil : Optional(frame.geometry.shownRect)
-    let frameParameters = frame.parameters
-    // The Output and Monitor stages' reading: the same parameters unless the signal
-    // declares its own (`SignalDescription.outputReading`).
-    let frames = PassFrameParameters(
-      source: frameParameters,
-      output: frame.signal.hasDistinctOutputReading ? frame.parameters(for: .output) : frameParameters)
     // Steady state: the state is bit for bit the last one, so `key.state` is its
     // normalized form already, and the rest compares field by field without
     // building a key (a structural compare of the whole key is most of an
@@ -315,8 +311,15 @@ public final class MonitorPass {
         && k.viewport == viewport && k.target == target && k.signal == frame.signal
         && k.output == output.withoutHeadroom
     }
-    var rebuilt = false
-    if !unchanged {
+    let frames: PassFrameParameters
+    if unchanged, let cached = lastFrameParameters {
+      frames = cached
+    } else {
+      // Frame decoding depends only on the layout, dimensions and signal in Key.
+      let source = frame.parameters
+      frames = PassFrameParameters(
+        source: source, output: frame.signal.hasDistinctOutputReading ? frame.parameters(for: .output) : source)
+      lastFrameParameters = frames
       let next = Key(
         state: s, layout: frame.layout, width: frame.width, height: frame.height, pixelAspectRatio: par,
         cleanAperture: aperture, processed: frame.isProcessed, signal: frame.signal, viewport: viewport, target: target, burnInLUT: feed.burnInLUT,
@@ -325,21 +328,11 @@ public final class MonitorPass {
         rebuild(next, frames: frames, headroom: output.headroom)
         key = next
         uniformGeneration &+= 1
-        rebuilt = true
       }
     }
-    if !rebuilt && output.headroom != appliedHeadroom {
+    if output.headroom != appliedHeadroom {
       applyHeadroom(output.headroom)
       uniformGeneration &+= 1
-    }
-    let frameChanged = lastFrameParameters != frames
-    if frameChanged {
-      lastFrameParameters = frames
-      uniformGeneration &+= 1
-    }
-    if rebuilt || frameChanged {
-      parameters.reciprocals = PassParameters.reciprocals(frameParameters, zebraPeriod: parameters.zebra.w)
-      parameters.outputReading = PassParameters.outputReading(frames.output, source: frameParameters)
     }
     if compute {
       try updateComputePipeline(layout: frame.layout.shaderKind)
@@ -360,7 +353,7 @@ public final class MonitorPass {
   /// render state cannot hide the picture. The viewport must lie inside the
   /// host's target.
   public func draw(with encoder: MTLRenderCommandEncoder) throws {
-    guard let p = pending, let pipeline else {
+    guard let p = pending, p.uniforms == 0, let pipeline else {
       throw MonitorKitError.gpu("MonitorPass.draw(with:) needs prepare(…) first.")
     }
     pending = nil
@@ -533,14 +526,20 @@ public final class MonitorPass {
         stageHasLUT: stageHasLUT, processed: k.processed)
       falseColorKey = fcKey
     }
-    // The picture's colour follows the stage it shows: a LUT on it makes it Rec.709.
-    let pictureHasLUT = s.pictureHasLUT(burnInLUT: k.burnInLUT != nil, monitorLUT: k.monitorLUT != nil)
+    let pictureLUT = MonitorLUT.applying(
+      to: s.pictureStage, burnIn: k.burnInLUT, monitor: s.monitorLUT ? k.monitorLUT : nil)
+    let pictureHasLUT = pictureLUT != nil
+    let lutDisplaySignal = pictureLUT?.displayOutputSignal
+    let pictureSignal = lutDisplaySignal ?? k.signal.signal(for: s.pictureStage)
     let inputs = ColorInputs(
-      output: k.output, signal: k.signal, transform: s.displayTransform, monitorStageHasLUT: pictureHasLUT)
+      output: k.output, signal: pictureSignal,
+      transform: s.displayTransform, monitorStageHasLUT: pictureHasLUT && lutDisplaySignal == nil,
+      range: lutDisplaySignal?.range ?? k.layout.effectiveRange(pictureSignal.range),
+      bitDepth: k.layout.codeBitDepth)
     if inputs != colorInputs {
       colorPipeline = MonitorColorPipeline(
         output: inputs.output, signal: inputs.signal, transform: inputs.transform,
-        monitorStageHasLUT: inputs.monitorStageHasLUT)
+        monitorStageHasLUT: inputs.monitorStageHasLUT, range: inputs.range, bitDepth: inputs.bitDepth)
       colorKey = Self.colorKey(colorPipeline)
       colorInputs = inputs
     }
@@ -548,6 +547,7 @@ public final class MonitorPass {
       s, key: k, layout: layout, guides: guides, matte: guideMatte, falseColor: falseColor,
       frameParameters: frameParameters, color: colorPipeline)
     falseColorColorPipeline = Self.falseColorPipeline(s, key: k)
+    parameters.reciprocals = PassParameters.reciprocals(frameParameters, zebraPeriod: parameters.zebra.w)
     // Before the variant, which fixes a shared source decode in the pipeline.
     parameters.outputReading = PassParameters.outputReading(frames.output, source: frameParameters)
     applyHeadroom(headroom)
@@ -813,11 +813,13 @@ public final class MonitorPass {
   }
 
   static func falseColorPipeline(_ s: MonitorState, key k: Key) -> MonitorColorPipeline {
-    let measuredHasLUT = s.falseColor.mode.needsLogSource ? false :
-      ((s.falseColor.stage != .source && k.burnInLUT != nil)
-       || (s.falseColor.stage == .monitor && s.monitorLUT && k.monitorLUT != nil))
+    let stage = s.falseColor.mode.needsLogSource ? .source : s.falseColor.stage
+    let measuredLUT = MonitorLUT.applying(
+      to: stage, burnIn: k.burnInLUT, monitor: s.monitorLUT ? k.monitorLUT : nil)
+    let lutDisplaySignal = measuredLUT?.displayOutputSignal
     return MonitorColorPipeline(
-      output: k.output, signal: k.signal, transform: s.displayTransform, monitorStageHasLUT: measuredHasLUT)
+      output: k.output, signal: lutDisplaySignal ?? k.signal.signal(for: stage), transform: s.displayTransform,
+      monitorStageHasLUT: measuredLUT != nil && lutDisplaySignal == nil)
   }
 
   static func makeParameters(
@@ -904,6 +906,12 @@ public final class MonitorPass {
     p.luts = SIMD4(
       k.burnInLUT != nil ? 1 : 0, s.monitorLUT && k.monitorLUT != nil ? 1 : 0,
       log.map { logCurveCode($0.curve) } ?? 0, transferCode(k.signal.encoding))
+    func lutWeights(_ lut: MonitorLUT?) -> SIMD4<Float> {
+      let weights = (lut?.declaredOutputSignal?.matrix ?? .bt709).coefficients
+      return SIMD4(Float(weights.r), Float(weights.g), Float(weights.b), 0)
+    }
+    p.burnInLUTWeights = lutWeights(k.burnInLUT)
+    p.monitorLUTWeights = lutWeights(k.monitorLUT)
 
     p.overlayWhite = overlay(ColorRGB(r: 1, g: 1, b: 1))
     p.navigatorColors[0] = overlay(ColorRGB(r: 0.85, g: 0.85, b: 0.85))

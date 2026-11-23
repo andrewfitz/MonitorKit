@@ -414,8 +414,10 @@ public final class ScopeAccumulator {
     let (burnApplied, monitorApplied) = lutApplied(stage: s.stage, burnInLUT, monitorLUT)
     appliedBurnInLUT = burnApplied
     appliedMonitorLUT = monitorApplied
+    let declared = MonitorLUT.applying(to: s.stage, burnIn: burnInLUT, monitor: monitorLUT)?.declaredOutputSignal
     let measured = ScopeContext(
-      range: frame.signal.signal(for: s.stage).range, matrix: matrix(settings: s, frame: frame, burnInLUT, monitorLUT))
+      range: declared?.range ?? frame.layout.effectiveRange(frame.signal.signal(for: s.stage).range),
+      matrix: matrix(settings: s, frame: frame, burnInLUT, monitorLUT))
     if context != measured { context = measured }
     if accumulatedSettings != s { accumulatedSettings = s }
   }
@@ -429,8 +431,11 @@ public final class ScopeAccumulator {
   func matrix(settings s: ScopeSettings, frame: MonitorFrame, _ burnInLUT: MonitorLUT?, _ monitorLUT: MonitorLUT?)
     -> YCbCrMatrix
   {
-    let (burn, monitor) = lutApplied(stage: s.stage, burnInLUT, monitorLUT)
-    return s.colorimetry.matrix(source: frame.signal.signal(for: s.stage).matrix, lutApplied: burn || monitor)
+    let lut = MonitorLUT.applying(to: s.stage, burnIn: burnInLUT, monitor: monitorLUT)
+    let declared = lut?.declaredOutputSignal
+    return s.colorimetry.matrix(
+      source: declared?.matrix ?? frame.signal.signal(for: s.stage).matrix,
+      lutApplied: lut != nil && declared == nil)
   }
 
   /// Recreates the bins only when their shape changes, and the dispatch
@@ -449,6 +454,9 @@ public final class ScopeAccumulator {
       if key.layout.byteLength != bins.length {
         let replacement = try Self.makeBins(engine.device, key.layout)
         retired.retire(bins)
+        // A later classic accumulation can replace Metal 4 bins even if this
+        // scope never encodes on Metal 4 again.
+        engine.residency.track(nil as MTLBuffer?, in: &resident.bins)
         bins = replacement
       }
       layout = key.layout
@@ -518,6 +526,10 @@ public final class ScopeAccumulator {
     var p = ScopeKernelParameters()
     let (burn, monitor) = lutApplied(stage: s.stage, burnInLUT, monitorLUT)
     let k = matrix(settings: s, frame: frame, burnInLUT, monitorLUT).coefficients
+    if let signal = MonitorLUT.applying(to: s.stage, burnIn: burnInLUT, monitor: monitorLUT)?.declaredOutputSignal {
+      let weights = signal.matrix.coefficients
+      p.stageWeights = SIMD4(Float(weights.r), Float(weights.g), Float(weights.b), 0)
+    }
     let stage: UInt32 = s.stage == .source ? 0 : (s.stage == .output ? 1 : 2)
     p.shape = SIMD4(s.kind.shaderCode, s.shaderMode, stage, UInt32(layout.channels))
     let slot = UInt32(generation & 1) * UInt32(ScopeStatisticsWord.slotWords)

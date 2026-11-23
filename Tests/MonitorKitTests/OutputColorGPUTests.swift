@@ -196,8 +196,7 @@ final class OutputColorGPUTests: XCTestCase {
       XCTAssertTrue(pass.status.isActive(.displayTransform))
       for i in 0..<decoded.count {
         let d = decoded[i]
-        let cpu = pass.colorPipeline.present(
-          ColorRGB(r: Double(d.x), g: Double(d.y), b: Double(d.z)), range: range, bitDepth: depth)
+        let cpu = pass.colorPipeline.present(ColorRGB(r: Double(d.x), g: Double(d.y), b: Double(d.z)))
         // Coloured highlights convert gamut from scene light far above 1, which float32
         // resolves to about 1e-6 of it; the BT.709 OETF's slope is at most 4.5.
         func scene(_ v: Float) -> Double {
@@ -207,6 +206,28 @@ final class OutputColorGPUTests: XCTestCase {
         assertClose(
           out.values[i].xyz, cpu, relative: 1e-4, absolute: tolerance,
           "\(log.curve) \(log.transport) \(range) \(layout) #\(i)")
+      }
+    }
+  }
+
+  func testLogReferenceFollowsPictureStageAndFloatContainer() throws {
+    let gpu = try requireGPU()
+    let pass = gpu.engine.makePass()
+    let signal = SignalDescription(range: .legal, encoding: .log(.sLog3SGamut3),
+      outputReading: SignalReading(range: .full, matrix: .bt709))
+    let integer = try SyntheticFrame.neutral(.v210, width: 6, height: 1) { _, _ in 225 }.frame(gpu, signal: signal)
+    let floating = try floatFrame(gpu, [SIMD3(repeating: 0.22)], signal: signal)
+    var state = MonitorState()
+    state.displayTransform.mode = .logToRec709
+    for frame in [integer, floating] {
+      for stage in SignalStage.allCases {
+        state.pictureStage = stage
+        let out = try gpu.render(frame, state: state, pass: pass)
+        let expanded = frame.layout.isFloat ? 0.22 :
+          try XCTUnwrap(signal.signal(for: stage).range.normalizeLuma(code: 225, bitDepth: 10))
+        let sample = color(SIMD3(repeating: expanded))
+        assertClose(out.rgb(0, 0), pass.colorPipeline.present(sample), relative: 1e-4, absolute: 2e-5,
+          "\(frame.layout) \(stage)")
       }
     }
   }

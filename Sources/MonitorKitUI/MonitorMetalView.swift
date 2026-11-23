@@ -33,8 +33,8 @@ import QuartzCore
 ///   which another view may show on another screen) as a uniform, so the tick
 ///   never waits for the main thread.
 /// - Memory: replaced frames are released as soon as the GPU finished with them:
-///   a convenience view watches the `status` of its last committed command
-///   buffer, a host-driven one takes what the host reports through
+///   a convenience view checks its outstanding command buffers. A host-driven
+///   view takes what the host reports through
 ///   `MonitorDrawableContext.completion` (or `completionReporter`). While the
 ///   view is paused or hidden it keeps no frame and no focus mask at all once
 ///   that work completed (a convenience view commits one empty marker buffer
@@ -98,6 +98,9 @@ public final class MonitorMetalView: MonitorPlatformView {
   /// ordered out when its views are added, and pausing on that state would
   /// depend on a notification arriving later.
   private var occlusionReported = false
+  #if canImport(UIKit) && !canImport(AppKit)
+    private let ancestorVisibility = AncestorVisibility()
+  #endif
   private var dragSurface: MonitorSurface?
   private var lastDrag: CGPoint?
 
@@ -142,7 +145,7 @@ public final class MonitorMetalView: MonitorPlatformView {
     #elseif canImport(UIKit)
       layer.frame = bounds
       self.layer.addSublayer(layer)
-      installGestures()
+      if configuration.gesturesEnabled { installGestures() }
     #endif
     driver.notify = { [weak self] status, graticule, error in
       guard let self else { return }
@@ -184,9 +187,10 @@ public final class MonitorMetalView: MonitorPlatformView {
 
   /// Draws exactly what a display tick draws, into `texture` instead of a
   /// drawable: the drawable-free path for tests, snapshots and thumbnails. The
-  /// layer is re-tagged as a tick would. In convenience mode it encodes into
-  /// `commandBuffer` (the caller commits), or into one of its own that it
-  /// commits; in host mode it calls the host's closure with no drawable.
+  /// layer is re-tagged as a tick would. In convenience mode the caller commits
+  /// a supplied command buffer and the view observes its completion. Without a
+  /// supplied buffer the view commits its own. In host mode it calls the host's
+  /// closure with no drawable.
   public func drawOffscreen(into texture: MTLTexture, commandBuffer: MTLCommandBuffer? = nil) {
     updateDrawableSize()
     refreshHeadroom()
@@ -246,7 +250,7 @@ public final class MonitorMetalView: MonitorPlatformView {
       guard let window, !isHiddenOrHasHiddenAncestor else { return false }
       return !occlusionReported || window.occlusionState.contains(.visible)
     #elseif canImport(UIKit)
-      guard let window, !isHidden else { return false }
+      guard let window, !AncestorVisibility.isHidden(self) else { return false }
       if let scene = window.windowScene { return scene.activationState != .background }
       // Legacy scene-less windows follow the application lifecycle instead.
       return UIApplication.shared.applicationState != .background
@@ -580,8 +584,19 @@ public final class MonitorMetalView: MonitorPlatformView {
       }
     }
   #elseif canImport(UIKit)
+    private func observeVisibility() {
+      ancestorVisibility.observe(self) { [weak self] in self?.updatePause() }
+    }
+
+    public override func didMoveToSuperview() {
+      super.didMoveToSuperview()
+      observeVisibility()
+      updatePause()
+    }
+
     public override func didMoveToWindow() {
       super.didMoveToWindow()
+      observeVisibility()
       windowChanged()
     }
 

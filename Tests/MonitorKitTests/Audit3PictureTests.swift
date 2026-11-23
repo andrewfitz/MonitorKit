@@ -153,8 +153,7 @@ final class Audit3PictureTests: XCTestCase {
   /// passes the tap guard, then the display adjustments (contrast 2) overflow it
   /// to inf on a signal-native target (no target encode clamps it), and the
   /// overlay mix computed NaN: the clipped pixel drew black. It now shows the
-  /// overlay as a finite super-white does. (A zebra cannot show it here: such a
-  /// value's IRE, luma · 100, is itself inf, above a lower-limit zebra's +inf top.)
+  /// overlay as a finite super-white does.
   func testAudit3AdjustmentOverflowKeepsTheOverlay() throws {
     let gpu = try requireGPU()
     let values: [SIMD3<Double>] = [SIMD3(repeating: 3e38), SIMD3(repeating: 2)]

@@ -70,7 +70,7 @@ Follows: FX3 Zebra (presets 70–100 and 100+ IRE; Custom1 is "level ± range", 
 | `opacity` | 0.65 | 0…1 | Stripe mix |
 | `stage` | `.output` | any stage | The signal measured |
 
-- IRE is the stage luma in percent: the transport Y' where no LUT touched the stage, the Rec.709 Y' of a LUT result. The same value drives false colour, clip indicators and scope clip counts, so a 940 code is exactly 100 IRE everywhere.
+- IRE is the stage luma in percent: the transport Y' where no LUT touched the stage, the declared Y' of a LUT result, which defaults to Rec.709. The same value drives false colour, clip indicators and scope clip counts, so a 940 code is exactly 100 IRE everywhere.
 - Set 1 draws light stripes rising to the right (`/`), set 2 dark stripes falling to the right (`\`), so overlapping sets stay readable. The stripe period is 16 points (8 on, 8 off), scaled by `MonitorViewport.pixelsPerPoint`.
 - FX3 presets map to `.lowerLimit` at 70, 75, 80, 85, 90, 95 or 100 (100+ is the lower limit just above 100, e.g. 100.5). The secondary-source examples "44 ± 1" (grey) and "108+" / "94+" (Rec.709 and S-Log3 clip) are a band at 44 with `range` 1 and lower limits at 108 and 94.
 - Overlay colours are authored as Rec.709 SDR at graphics white and encoded for the target, so on an HDR layer they sit at 203 cd/m² (58 % PQ, 75 % HLG) instead of peak white.
@@ -130,7 +130,7 @@ Follows: the Video Assist's scopes (luma waveform, RGB parade, vectorscope with 
 | `waveformMode` | `.luma` | `.luma`, `.rgbOverlay`, `.rgbParade`, `.ycbcrParade` | Y'CbCr parade chroma is offset so neutral sits at 50 % |
 | `histogramMode` | `.rgbOverlay` | `.luma`, `.rgbOverlay`, `.rgbParade` | |
 | `vectorscopeZoom` | 1 | 1, 2, 4 | Accumulated at the zoomed scale, so zoom adds real resolution |
-| `colorimetry` | `.auto` | `.auto`, `.bt601`, `.bt709`, `.bt2020`, `.smpte240m` | Weights of the drawn luma, the Y'CbCr parade and the vectorscope. Auto: the frame's matrix for the source, Rec.709 after a LUT |
+| `colorimetry` | `.auto` | `.auto`, `.bt601`, `.bt709`, `.bt2020`, `.smpte240m` | Weights of the drawn luma, the Y'CbCr parade and the vectorscope. Auto uses the frame's matrix for the source and the last LUT's declared matrix for a LUT result |
 | `waveformColumns` | 1024 | 64…4096, even | Bins across the scope (split three ways in a parade) |
 | `waveformLevels` | 512 | 64…2048 | Bins over `levelRange` |
 | `histogramBins` | 512 | 64…4096, even | Bins over `levelRange` |
@@ -247,7 +247,7 @@ Follows: FX3 Display LUT (monitor-only) and PPLUT (recorded, "baked in"), Video 
 | File format | Adobe/Resolve `.cube`: `LUT_3D_SIZE` 2…65 (2, 17, 33 and 65 tested), `LUT_1D_SIZE` up to 65536 entries as a 1D-only LUT or a shaper before a 3D table, `DOMAIN_MIN`/`DOMAIN_MAX` or `LUT_1D_INPUT_RANGE`/`LUT_3D_INPUT_RANGE`, `TITLE` (`CubeLUT(text:)`) |
 | Interpolation | `.tetrahedral` (default: four lattice reads, neutrals stay neutral), `.trilinear` (eight reads, x then y then z, bit-compatible with a conventional trilinear LUT shader), `.hardware` (the texture filter; fastest, 8 fractional bits; falls back to trilinear where 32-bit float filtering is missing) |
 | Routing | `burnInLUT`: the output stage, and every preview of it; a host that burns the LUT into its output calls `mk_applyLUT` with the same `MonitorLUT`, so preview and output match. `monitorLUT`: the monitor stage only, stacked on the burn-in LUT, never in output. `MonitorState.monitorLUT` (default `true`) lets a surface skip the monitor LUT. `LUTRouting` names the two |
-| Output | Rec.709 display R'G'B' (`LUTOutputEncoding.rec709`, the only encoding modelled): a LUT stage is a Rec.709 SDR picture, weighted as Rec.709 |
+| Output | Rec.709 display R'G'B' by default. Hosts attach HDR output metadata using `MonitorLUT.withOutputSignal(_:)` |
 
 Zebras, false colour, peaking, guides and every other tool never reach output in either routing.
 
@@ -335,7 +335,7 @@ Follows: the Video Assist's meters (VU at −18 or −20 dBFS, PPM at −18 or �
 | `loudnessChannels` | the standard layout | one `LoudnessChannel` per channel | Mono, stereo, 5.0, 5.1 by count (BS.1770 Table 3 weights; LFE excluded); other counts measure channels 1–2 as stereo; presets include SMPTE 7.1; `.excluded` leaves a channel out (another language pair) |
 | `publishInterval` | 5 ms | ≥ 0 | Readings are published at most this often; peaks, maxima and clip counts lose nothing in between |
 
-Readings per channel (`AudioChannelLevels`): sample peak and hold, true peak (BS.1770 Annex 2, 4× oversampled below 96 kHz and 2× above) with hold and maximum, RMS, VU, PPM, clip count. Loudness (`LoudnessSnapshot`): momentary (400 ms), short-term (3 s), integrated (gated, BS.1770), loudness range (EBU Tech 3342), maximum momentary and short-term, duration. `programmeMaximumTruePeak` is R 128's "Max TP" over the programme channels. Measurement control: `pauseLoudness` / `resumeLoudness` (EBU Tech 3341 stand-by), `resetLoudness`, `resetPeaks`, `reset`, and `flush()` when a stream stops. `LoudnessMeter` is the loudness engine alone.
+Readings per channel (`AudioChannelLevels`): sample peak and hold, true peak (BS.1770 Annex 2, 4× oversampled below 96 kHz and 2× above) with hold and maximum, RMS, VU, PPM, clip count. Loudness (`LoudnessSnapshot`): momentary (400 ms), short-term (3 s), integrated (gated, BS.1770), loudness range (EBU Tech 3342), maximum momentary and short-term, duration. `programmeMaximumTruePeak` is R 128's "Max TP" over the programme channels. Measurement control: `pauseLoudness` / `resumeLoudness` (EBU Tech 3341 stand-by), `resetLoudness`, `resetPeaks`, `reset`, and `finishStream()` when a stream ends. `LoudnessMeter` is the loudness engine alone.
 
 `MeterScale` gives each meter's marks and zones: IEC 60268-18 digital peak, the IEC 60268-17 VU face, each PPM type's scale (and the Nordic one), and the EBU +9 / +18 loudness scales in LU or LUFS. `MeterScale.expandedPeak()` is the level-meter scale: −60…0 dBTP with an expanded top (−40 at 12 % of the travel, −20 at 40 %), marks at −40/−30/−20/−18/−12/−9/−6/−3/0, the SMPTE RP 155 −20 dBFS reference, and zones fixed in dB: green below −9 (EBU R 68 permitted maximum), amber to −1, red from −1 dBTP (EBU R 128 maximum true peak). `zoneSpans`, `ticks` and `layout(level:hold:)` put them on the travel.
 
@@ -364,4 +364,4 @@ A tool that is on but cannot run on the frame's signal is skipped with a reason 
 
 ## 10. Out of scope
 
-These need camera metadata or sensors a monitor input does not carry: level gauge, EI, shutter, ISO and aperture readouts, Focus Map (depth), Bright Monitoring, face and eye frames, the FX3's EI preview. A host that has these values can show them in `MonitorStatusOverlay` labels. Sony Pattern 1 (SDR) false colour is not implemented, nor are HDR-output LUTs (any LUT makes the picture Rec.709).
+These need camera metadata or sensors a monitor input does not carry: level gauge, EI, shutter, ISO and aperture readouts, Focus Map (depth), Bright Monitoring, face and eye frames, the FX3's EI preview. A host that has these values can show them in `MonitorStatusOverlay` labels. Sony Pattern 1 (SDR) false colour is not implemented.

@@ -47,9 +47,45 @@ public final class MonitorLUT: @unchecked Sendable {
   /// GPUs that cannot filter 32-bit float textures.
   public let interpolation: LUTInterpolation
   public let parameters: LUTParameters
-  /// What the LUT's output means: Rec.709 display R'G'B' (MonitorKit's convention
-  /// for every LUT stage; `outputEncoding.signal` tags a host's output buffer).
+  /// The default interpretation when a host supplies no output declaration.
   public let outputEncoding: LUTOutputEncoding
+  /// A host's explicit interpretation of this LUT's normalized RGB output.
+  public let declaredOutputSignal: SignalDescription?
+
+  public var outputSignal: SignalDescription { declaredOutputSignal ?? outputEncoding.signal }
+
+  /// A display-referred LUT output can be colour managed. Camera-log output
+  /// stays a code-value view, as on a LUT without a declaration.
+  public var displayOutputSignal: SignalDescription? {
+    guard let signal = declaredOutputSignal, case .display = signal.encoding else { return nil }
+    return signal
+  }
+
+  /// Attaches colour metadata while sharing the original cube and GPU texture.
+  /// A host can use this when its output declaration is known after upload.
+  public func withOutputSignal(_ signal: SignalDescription) -> MonitorLUT {
+    if declaredOutputSignal == signal { return self }
+    return MonitorLUT(original: self, signal: signal)
+  }
+
+  private init(original: MonitorLUT, signal: SignalDescription) {
+    cube = original.cube
+    texture = original.texture
+    interpolation = original.interpolation
+    parameters = original.parameters
+    outputEncoding = original.outputEncoding
+    declaredOutputSignal = signal
+  }
+
+  package static func applying(
+    to stage: SignalStage, burnIn: MonitorLUT?, monitor: MonitorLUT?
+  ) -> MonitorLUT? {
+    switch stage {
+    case .source: return nil
+    case .output: return burnIn
+    case .monitor: return monitor ?? burnIn
+    }
+  }
 
   /// Lattice size of the placeholder 3D table of a 1D-only LUT, and the least
   /// width and height of a texture with a shaper: 64 entries a slice, so a
@@ -155,6 +191,7 @@ public final class MonitorLUT: @unchecked Sendable {
     self.texture = texture
     self.interpolation = effective
     self.outputEncoding = outputEncoding
+    declaredOutputSignal = nil
     let mode: UInt32 = effective == .tetrahedral ? 0 : (effective == .trilinear ? 1 : 2)
     parameters = LUTParameters(
       domainLow: SIMD4(cube.domainMin, 0), domainScale: SIMD4(scale, 0),

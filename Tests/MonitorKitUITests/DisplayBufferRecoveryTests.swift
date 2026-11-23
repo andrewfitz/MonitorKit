@@ -32,7 +32,7 @@ final class DisplayBufferRecoveryTests: XCTestCase {
     let accumulator = try XCTUnwrap(renderer.accumulator(for: scope))
     let generation = accumulator.generation
     XCTAssertFalse(renderer.scopesDue)
-    driver.trackCommitted(try XCTUnwrap(gpu.queue.makeCommandBuffer()))
+    driver.trackCommandBuffer(try XCTUnwrap(gpu.queue.makeCommandBuffer()))
     driver.checkCommandBuffers { _ in .error }
     XCTAssertFalse(feed.hasFocusMask(for: try XCTUnwrap(source.latestFrame)))
     XCTAssertTrue(renderer.scopesDue, "the failed buffer's accumulation must not stay cached")
@@ -59,9 +59,9 @@ final class DisplayBufferRecoveryTests: XCTestCase {
     let picture = try XCTUnwrap(gpu.queue.makeCommandBuffer())
     let scope = try XCTUnwrap(gpu.queue.makeCommandBuffer())
     let laterPicture = try XCTUnwrap(gpu.queue.makeCommandBuffer())
-    driver.trackCommitted(picture)
-    driver.trackCommitted(scope)
-    driver.trackCommitted(laterPicture)
+    driver.trackCommandBuffer(picture)
+    driver.trackCommandBuffer(scope)
+    driver.trackCommandBuffer(laterPicture)
     var seen: [ObjectIdentifier] = []
     driver.checkCommandBuffers { buffer in
       seen.append(ObjectIdentifier(buffer))

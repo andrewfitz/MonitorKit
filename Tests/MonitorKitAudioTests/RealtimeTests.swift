@@ -59,6 +59,7 @@ final class RealtimeTests: XCTestCase {
       sampleRate: fs, channelCount: channels, loudnessChannels: Array(repeating: .weighted(1), count: channels)))
     // 2x true peak with the phases, then the samples, as the PPM's input;
     // a fold of 4 (768 kHz); every call publishing with a 60 s RMS window.
+    let fractional = try AudioMeter(sampleRate: 11025, channelCount: 1)
     let meter96 = try AudioMeter(sampleRate: 96000, channelCount: 3)
     let meter192 = try AudioMeter(sampleRate: 192_000, channelCount: 5)
     let meter768 = try AudioMeter(sampleRate: 768_000, channelCount: 4)
@@ -94,6 +95,7 @@ final class RealtimeTests: XCTestCase {
         interleaved16.withUnsafeBufferPointer { meter.process(interleaved: $0.baseAddress!, frameCount: size) }
         meter.process(bufferList: list, frameCount: size, format: .float32)
         meter.process(bufferList: partial.unsafePointer, frameCount: size, format: .float32)
+        fractional.process(planar: block.pointers, frameCount: size)
         meter96.process(planar: block.pointers, frameCount: size)
         meter192.process(planar: block.pointers, frameCount: size)
         meter768.process(planar: block.pointers, frameCount: size)
@@ -120,6 +122,7 @@ final class RealtimeTests: XCTestCase {
       meter.process(planar: block.pointers, frameCount: 0)
       meter.process(planar: block.pointers, frameCount: 100)
       meter.flush()
+      meter.finishStream()
       meter.resetLoudness()
       meter.flush()
       loudness.resetMeasurement()

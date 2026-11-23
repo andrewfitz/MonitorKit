@@ -8,10 +8,10 @@ import XCTest
 @testable import MonitorKit
 
 final class RawCVFrameDecoderTests: XCTestCase {
-  private func buffer(_ type: OSType) throws -> CVPixelBuffer {
+  private func buffer(_ type: OSType, width: Int = 16) throws -> CVPixelBuffer {
     try RawCVFixtureRegistration.ensure(type)
     var result: CVPixelBuffer?
-    XCTAssertEqual(CVPixelBufferCreate(nil, 16, 2, type,
+    XCTAssertEqual(CVPixelBufferCreate(nil, width, 2, type,
       [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &result), kCVReturnSuccess)
     return try XCTUnwrap(result)
   }
@@ -79,6 +79,44 @@ final class RawCVFrameDecoderTests: XCTestCase {
       }
       frame = nil
       host.gpu.engine.residency.release(through: host.completedIndex)
+    }
+  }
+
+  func testDecodedPlaneStaysResidentUntilBothOwnersRetire() throws {
+    let host = try requireMTL4()
+    let residency = try MonitorResidency(device: host.gpu.device)
+    host.queue.addResidencySet(residency.set)
+    defer { host.queue.removeResidencySet(residency.set) }
+    let decoder = try MonitorCVRawFrameDecoder(device: host.gpu.device, residency: residency)
+    let image = try buffer(0x72323130)
+    var frame: MonitorFrame?
+    try host.run { frame = try decoder.frame(image, signal: .rec709, submission: $0) }
+    let plane = try XCTUnwrap(frame?.luma)
+    XCTAssertTrue(residency.contains(plane))
+    XCTAssertEqual(residency.commitCount, 1)
+    residency.add(plane)
+    frame = nil
+    residency.release(through: host.completedIndex)
+    XCTAssertTrue(residency.contains(plane))
+    XCTAssertEqual(residency.set.allocationCount, 1, "copy and decoder staging have retired")
+    residency.retire(plane, resident: plane)
+    XCTAssertEqual(residency.set.allocationCount, 0)
+  }
+
+  func testOddPacked422IsRejectedBeforeStaging() throws {
+    let host = try requireMTL4()
+    let residency = try MonitorResidency(device: host.gpu.device)
+    let decoder = try MonitorCVRawFrameDecoder(device: host.gpu.device, residency: residency)
+    for width in [1, 3] {
+      let image = try buffer(0x55595641, width: width)
+      XCTAssertEqual(CVPixelBufferGetWidth(image), width)
+      try host.run { submission in
+        XCTAssertThrowsError(try decoder.frame(image, signal: .rec709, submission: submission)) { error in
+          XCTAssertEqual(error as? MonitorKitError, .invalidFrame("Raw 4:2:2 frames require an even width."))
+        }
+      }
+      XCTAssertEqual(residency.latestSubmission, 0)
+      XCTAssertEqual(residency.commitCount, 0)
     }
   }
 

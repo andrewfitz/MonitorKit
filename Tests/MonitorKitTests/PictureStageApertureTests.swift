@@ -52,6 +52,37 @@ final class PictureStageApertureTests: XCTestCase {
 
   // MARK: - Picture stage
 
+  func testDeclaredLUTOutputKeepsItsHDRColorAndLuma() throws {
+    let gpu = try requireGPU()
+    let frame = try PictureTests.picture(width: 32, height: 16).frame(gpu, signal: .rec709)
+    let (original, monitor) = try luts(gpu)
+    var state = MonitorState()
+    state.pictureStage = .output
+    for transfer in [DisplayTransfer.pq, .hlg] {
+      let signal = SignalDescription(range: .full, matrix: .bt2020, encoding: .display(transfer), primaries: .rec2020)
+      let burn = original.withOutputSignal(signal)
+      XCTAssertTrue(burn.texture === original.texture)
+      XCTAssertEqual(burn.parameters, original.parameters)
+      XCTAssertNil(original.declaredOutputSignal)
+      XCTAssertEqual(burn.outputSignal, signal)
+
+      state.displayTransform.mode = .none
+      let native = try render(gpu, frame, state: state, burn: burn).1
+      XCTAssertEqual(native.colorPipeline.picture.transfer, transfer == .pq ? .pq : .hlg)
+      XCTAssertEqual(native.colorPipeline.picture.primaries, .rec2020)
+      XCTAssertEqual(native.currentParameters.burnInLUTWeights.x, 0.2627)
+
+      state.displayTransform.mode = .hdrToSDR
+      let converted = try render(gpu, frame, state: state, burn: burn).1
+      XCTAssertEqual(converted.colorPipeline.transform, transfer == .pq ? .pqToSDR : .hlgToSDR)
+      var stacked = state
+      stacked.pictureStage = .monitor
+      let legacy = try render(gpu, frame, state: stacked, burn: burn, monitor: monitor).1
+      XCTAssertEqual(legacy.colorPipeline.picture.transfer, .bt1886)
+      XCTAssertEqual(legacy.colorPipeline.picture.primaries, .rec709)
+    }
+  }
+
   /// The source picture of a feed with both LUTs is the picture of the feed
   /// without them; the output picture drops only the monitor LUT. Specialized and
   /// all-tools pipelines alike, the navigator included.

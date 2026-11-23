@@ -12,6 +12,8 @@ public enum MonitorRawPixelFormat: UInt32, Sendable, CaseIterable {
 /// texture layouts. No matrix, transfer or gamut conversion is performed.
 public final class MonitorRawFrameDecoder {
   private let device: MTLDevice
+  // Metal Feature Set Tables: Apple10 doubles the Metal4 family's 2D limit.
+  let maximumTextureDimension: Int
   private let packedPipeline: MTLComputePipelineState
   private let planarPipeline: MTLComputePipelineState
   private let rgbPipeline: MTLComputePipelineState
@@ -19,6 +21,7 @@ public final class MonitorRawFrameDecoder {
   public init(device: MTLDevice) throws {
     guard device.supportsFamily(.metal4) else { throw MonitorKitError.gpu("Raw monitor frames require Metal 4.") }
     self.device = device
+    maximumTextureDimension = device.supportsFamily(.apple10) ? 32_768 : 16_384
     let compiler = try device.makeCompiler(descriptor: MTL4CompilerDescriptor())
     let libraryDescriptor = MTL4LibraryDescriptor()
     libraryDescriptor.source = Self.shader
@@ -49,13 +52,28 @@ public final class MonitorRawFrameDecoder {
     offsets: [Int] = [0], strides: [Int], signal: SignalDescription,
     commandBuffer: MTL4CommandBuffer, residency: MTLResidencySet
   ) throws -> Encoding {
-    guard input.device.registryID == device.registryID, width > 0, height > 0,
-      width <= Int(UInt32.max) / 8, height <= Int(UInt32.max) else {
+    guard residency.device.registryID == device.registryID else {
+      throw MonitorKitError.invalidFrame("Raw monitor residency and decoder must use the same device.")
+    }
+    let encoding = try encode(input: input, format: format, width: width, height: height,
+      offsets: offsets, strides: strides, signal: signal, commandBuffer: commandBuffer)
+    for allocation in encoding.allocations { residency.addAllocation(allocation) }
+    return encoding
+  }
+
+  /// Encodes the work. Its caller registers the returned allocations before submission.
+  func encode(
+    input: MTLBuffer, format: MonitorRawPixelFormat, width: Int, height: Int,
+    offsets: [Int], strides: [Int], signal: SignalDescription, commandBuffer: MTL4CommandBuffer
+  ) throws -> Encoding {
+    let packed = format == .uyvy8 || format == .yuyv8 || format == .uyva
+    let maximumWidth = packed ? 2 * maximumTextureDimension : maximumTextureDimension
+    guard input.device.registryID == device.registryID, commandBuffer.device.registryID == device.registryID,
+      width > 0, height > 0, width <= maximumWidth, height <= maximumTextureDimension else {
       throw MonitorKitError.invalidFrame("Invalid raw monitor dimensions or device.")
     }
     let deep = format == .p216 || format == .pa16
     let planar = format == .nv12Video || format == .nv12Full || deep || format == .i420
-    let packed = format == .uyvy8 || format == .yuyv8 || format == .uyva
     let count = format == .i420 || format == .pa16 ? 3 : planar ? 2 : 1
     guard offsets.count == count, strides.count == count else {
       throw MonitorKitError.invalidFrame("Raw monitor plane count does not match the format.")
@@ -113,7 +131,6 @@ public final class MonitorRawFrameDecoder {
     let frame = try MonitorFrame(layout: layout, width: width, height: height, packed: packedTexture, luma: luma, chroma: chroma, signal: signal)
     let allocations: [any MTLAllocation] = [input, parameters] + [packedTexture, luma, chroma].compactMap { $0 }
     guard let encoder = commandBuffer.makeComputeCommandEncoder() else { throw MonitorKitError.gpu("Raw monitor compute encoder unavailable.") }
-    for allocation in allocations { residency.addAllocation(allocation) }
     // Inputs may have been produced by an IOSurface-to-buffer GPU copy in a
     // preceding encoder. Metal 4 does not infer this producer/consumer edge.
     encoder.barrier(afterQueueStages: [.blit, .dispatch], beforeStages: .dispatch, visibilityOptions: .device)

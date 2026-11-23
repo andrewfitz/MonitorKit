@@ -165,6 +165,10 @@ public final class MonitorFeed {
     )
   }
 
+  private static func thresholds(_ focus: FocusSettings) -> SIMD2<Float> {
+    SIMD2(Float(focus.edgeThreshold), Float(focus.normalizedNoiseRejection))
+  }
+
   /// The mask (made or reused at the frame's size), pipeline and inputs of an analysis.
   func prepareAnalysis(_ frame: MonitorFrame, focus: FocusSettings) throws -> Analysis {
     let mask: MTLTexture
@@ -193,7 +197,7 @@ public final class MonitorFeed {
     guard let pipeline = focusPipeline else { throw MonitorKitError.gpu("No focus-analysis pipeline.") }
     let uniforms = AnalysisUniforms(
       frame: frame.parameters(for: focus.stage),
-      thresholds: SIMD2(Float(focus.edgeThreshold), Float(min(1, max(0, focus.noiseRejection)))),
+      thresholds: Self.thresholds(focus),
       burn: burn?.parameters ?? .disabled, monitor: monitor?.parameters ?? .disabled)
     return Analysis(mask: mask, pipeline: pipeline, burn: burn, monitor: monitor, uniforms: uniforms)
   }
@@ -216,12 +220,14 @@ public final class MonitorFeed {
     focusMask != nil && maskKey?.matches(frame) == true
   }
 
-  /// Whether `focusMask` was analysed from `frame` on the stage a surface shows:
+  /// Whether `focusMask` was analysed with this surface's thresholds and stage:
   /// the LUTs it applied are the ones that surface's stage has, and so is its
   /// reading of the codes (a distinct output reading tells the source apart from
   /// an Output stage with no LUT).
-  func hasFocusMask(for frame: MonitorFrame, stage: SignalStage, monitorLUTEnabled: Bool) -> Bool {
+  func hasFocusMask(for frame: MonitorFrame, focus: FocusSettings, monitorLUTEnabled: Bool) -> Bool {
     guard focusMask != nil, let key = maskKey, key.matches(frame) else { return false }
+    guard key.uniforms.thresholds == Self.thresholds(focus) else { return false }
+    let stage = focus.stage
     let burn = stage != .source ? burnInLUT : nil
     let monitor = stage == .monitor && monitorLUTEnabled ? monitorLUT : nil
     guard key.burn === burn && key.monitor === monitor else { return false }
@@ -233,13 +239,19 @@ public final class MonitorFeed {
   /// Marks the mask stale, e.g. when the host stops analysing.
   public func invalidateFocusMask() { maskKey = nil }
 
-  /// Whether the picture a surface showing this feed with `state` draws came out
-  /// of a LUT (`state.pictureHasLUT`: the burn-in LUT unless the picture shows the
-  /// source, the monitor LUT too when it shows the monitor stage and
-  /// `state.monitorLUT`), which makes it Rec.709 SDR: the `monitorStageHasLUT`
-  /// argument of `MonitorOutputColor.layer(for:…)` and `MonitorEngine.prepare(…)`.
+  /// The final LUT applied to the displayed stage, if that stage uses a LUT.
+  public func pictureLUT(for state: MonitorState) -> MonitorLUT? {
+    MonitorLUT.applying(to: state.pictureStage, burnIn: burnInLUT, monitor: state.monitorLUT ? monitorLUT : nil)
+  }
+
+  public func pictureLUTSignal(for state: MonitorState) -> SignalDescription? {
+    pictureLUT(for: state)?.outputSignal
+  }
+
+  /// Whether the picture a surface showing this feed with `state` draws came
+  /// out of a LUT. A LUT with an explicit declaration carries its own signal.
   public func monitorStageHasLUT(for state: MonitorState) -> Bool {
-    state.pictureHasLUT(burnInLUT: burnInLUT != nil, monitorLUT: monitorLUT != nil)
+    pictureLUT(for: state) != nil
   }
 
   /// Peaking is off: the mask goes (kept for `retiredFrames` more analyses on the

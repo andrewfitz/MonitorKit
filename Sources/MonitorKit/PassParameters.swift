@@ -108,6 +108,9 @@ public struct PassParameters: Sendable {
   public var falseColorWeights = SIMD4<Float>.zero
   public var falseColorToTarget: InlineArray<3, SIMD4<Float>> = [SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0)]
   public var falseColorTransform: InlineArray<3, SIMD4<Float>> = [SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0)]
+  /// Y' coefficients of each LUT's encoded RGB output.
+  public var burnInLUTWeights = SIMD4<Float>(0.2126, 0.7152, 0.0722, 0)
+  public var monitorLUTWeights = SIMD4<Float>(0.2126, 0.7152, 0.0722, 0)
 
   public init() {}
 

@@ -121,8 +121,8 @@ final class PlanarBlock {
 
 extension AudioMeter {
   /// Feeds planar Float32 in blocks of `blockSize`, calling `each` after
-  /// every block, then flushes the last publish interval (as a host does
-  /// when its stream stops).
+  /// every block, then publishes the last interval. Further calls can
+  /// continue the same stream.
   func feed(_ signal: Signal, blockSize: Int = 512, each: ((AudioMeterSnapshot) -> Void)? = nil) {
     let block = PlanarBlock(channelCount: signal.channels.count, capacity: blockSize)
     var offset = 0

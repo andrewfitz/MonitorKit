@@ -121,19 +121,26 @@ public final class MonitorResidency: @unchecked Sendable {
     set = try device.makeResidencySet(descriptor: d)
   }
 
-  /// Runs `body` on the set under the lock that guards every other change to it. `body`
-  /// must not call back into this object.
-  func withSet(_ body: (MTLResidencySet) -> Void) { state.withLock { _ in body(set) } }
-
   /// Adds `allocation` and commits. Counted: an allocation added n times leaves
   /// the set after n releases, so a LUT shared by two feeds stays resident.
   public func add(_ allocation: any MTLAllocation) {
+    add(CollectionOfOne(allocation))
+  }
+
+  /// Acquires one count per allocation and publishes new set members together.
+  func add<S: Sequence>(_ allocations: S) where S.Element == any MTLAllocation {
     state.withLock { s in
-      let id = ObjectIdentifier(allocation)
-      let n = s.counts[id, default: 0]
-      s.counts[id] = n + 1
-      if n == 0 {
-        set.addAllocation(allocation)
+      var added = false
+      for allocation in allocations {
+        let id = ObjectIdentifier(allocation)
+        let n = s.counts[id, default: 0]
+        s.counts[id] = n + 1
+        if n == 0 {
+          set.addAllocation(allocation)
+          added = true
+        }
+      }
+      if added {
         set.commit()
         commits.add(1, ordering: .relaxed)
       }
@@ -248,7 +255,9 @@ public struct MonitorUniformRing: ~Copyable {
   private let label: String
 
   public init(slotLength: Int, label: String) {
-    self.slotLength = (max(1, slotLength) + 255) / 256 * 256
+    // If rounding up cannot fit in Int, retain an aligned size that still
+    // exceeds any device limit so slot allocation reports the error.
+    self.slotLength = align256(min(max(1, slotLength), Int.max - 255))
     self.label = label
   }
 
@@ -309,7 +318,11 @@ public struct MonitorUniformRing: ~Copyable {
   /// A new shared, write-combined buffer of `slots` slots (the CPU only writes
   /// it); the old one is retired with its last use.
   private mutating func grow(_ device: MTLDevice, _ residency: MonitorResidency, slots: Int) throws {
-    let length = max(1, slots) * slotLength
+    let capacity = max(1, slots)
+    let (length, overflow) = capacity.multipliedReportingOverflow(by: slotLength)
+    guard !overflow, length <= device.maxBufferLength else {
+      throw MonitorKitError.gpu("The uniform ring exceeds the device's maximum buffer length.")
+    }
     guard let next = device.makeBuffer(length: length, options: [.storageModeShared, .cpuCacheModeWriteCombined])
     else { throw MonitorKitError.gpu("Cannot allocate a \(length)-byte uniform ring.") }
     next.label = label
@@ -324,8 +337,8 @@ public struct MonitorUniformRing: ~Copyable {
     }
     buffer = next
     // Every slot starts free; generations are invalid until written.
-    lastUse = [UInt64](repeating: 0, count: max(1, slots))
-    held = [UInt64](repeating: .max, count: max(1, slots))
+    lastUse = [UInt64](repeating: 0, count: capacity)
+    held = [UInt64](repeating: .max, count: capacity)
     current = -1
   }
 

@@ -320,6 +320,35 @@ struct TruePeakInterpolator {
     }
   }
 
+  /// At offset j frames after the last sample, Annex 2 phase p estimates
+  /// time j - 5.875 + p/4 relative to that sample. Only offsets 1...5
+  /// contain pending instants inside the recording. For a short stream
+  /// also exclude instants before its first real sample.
+  static let tailFrames = 5
+
+  func terminalPeak(
+    _ x: UnsafeMutablePointer<Float>, realFrames: Int,
+    scratch phases: UnsafePointer<UnsafeMutablePointer<Float>>
+  ) -> Float {
+    x.update(repeating: 0, count: Self.tailFrames)
+    interpolate(x, count: Self.tailFrames, into: phases)
+    let firstEighth = -(realFrames - 1) * 8
+    var peak: Float = 0
+    var k = 0
+    while k < phaseCount {
+      let phase = k * (4 / phaseCount)
+      var j = 1
+      while j <= Self.tailFrames {
+        if j * 8 - 47 + 2 * phase >= firstEighth {
+          peak = max(peak, abs(phases[k][j - 1]))
+        }
+        j += 1
+      }
+      k += 1
+    }
+    return peak
+  }
+
   /// `envelope[i]` = the largest magnitude of the phases at sample i.
   func envelope(
     phases: UnsafePointer<UnsafeMutablePointer<Float>>, count: Int, into envelope: UnsafeMutablePointer<Float>
@@ -665,5 +694,85 @@ func foldedEnvelope(
   while k < laneCount {
     vDSP_vmax(envelope, 1, lanes[k], 1, envelope, 1, n)
     k += 1
+  }
+}
+
+/// Instant attack with exponential return and a separately timed hold marker.
+/// The ramp applies each sample's exact age at the end of the chunk.
+struct PeakBallistics {
+  private let capacity: Int
+  private let holdFrames: Int
+  private let ramp: UnsafeMutablePointer<Double>
+  private let scratch: UnsafeMutablePointer<Double>
+
+  init(configuration: AudioMeterConfiguration, capacity: Int) {
+    self.capacity = capacity
+    let hold = configuration.peakHoldTime * configuration.sampleRate
+    holdFrames = hold >= Double(Int.max / 2) ? Int.max : Int(hold.rounded())
+    ramp = .allocate(capacity: capacity + 1)
+    scratch = .allocate(capacity: capacity)
+    scratch.initialize(repeating: 0, count: capacity)
+    let rate = -(configuration.peakDecayRate / configuration.sampleRate) * (log(10) / 20)
+    for age in 0...capacity {
+      (ramp + capacity - age).initialize(to: exp(rate * Double(age)))
+    }
+  }
+
+  func deallocate() {
+    ramp.deallocate()
+    scratch.deallocate()
+  }
+
+  func advance(
+    _ samples: UnsafePointer<Float>, count: Int, maximum: Float,
+    bar: inout Double, hold: inout Double, age: inout Int
+  ) {
+    let peak = Double(maximum)
+    let decayed = bar * ramp[capacity - count]
+    if decayed >= peak {
+      bar = decayed
+    } else if abs(samples[count - 1]) == maximum {
+      bar = peak
+    } else {
+      let n = vDSP_Length(count)
+      vDSP_vspdp(samples, 1, scratch, 1, n)
+      vDSP_vmulD(scratch, 1, ramp + capacity - count + 1, 1, scratch, 1, n)
+      var newest = 0.0
+      vDSP_maxmgvD(scratch, 1, &newest, n)
+      bar = max(decayed, newest)
+    }
+
+    if holdFrames == 0 {
+      hold = bar
+      return
+    }
+    let remaining = holdFrames - age
+    let release = max(0, count - remaining)
+    let released = hold * ramp[capacity - release]
+    if released > peak || peak == 0 {
+      hold = released
+      age += min(count, remaining)
+    } else if peak >= hold && count <= holdFrames {
+      // A new maximum supersedes every earlier peak and cannot expire
+      // within this chunk. Equal crests restart the hold at the last one.
+      var i = count - 1
+      while abs(samples[i]) != maximum { i -= 1 }
+      hold = peak
+      age = count - 1 - i
+    } else {
+      // A released marker can be caught more than once. Replay those
+      // decisions in sample order, including a crossing at the last frame.
+      let decay = ramp[capacity - 1]
+      var i = 0
+      while i < count {
+        if age < holdFrames { age += 1 } else { hold *= decay }
+        let value = Double(abs(samples[i]))
+        if value >= hold {
+          hold = value
+          age = 0
+        }
+        i += 1
+      }
+    }
   }
 }

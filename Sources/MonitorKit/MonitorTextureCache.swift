@@ -171,7 +171,7 @@ public final class MonitorTextureCache: @unchecked Sendable {
     let (kept, replaced) = locked { s -> ((MTLTexture, FrozenPlanes), MTLTexture?) in
       if let i = Self.index(of: key, in: s.entries) {
         if Self.same(s.entries[i].surface, iosurface) {
-          s.entries[i].lastUse = t
+          s.entries[i].lastUse = max(s.entries[i].lastUse, t)
           s.entries[i].owner = owner
           return ((s.entries[i].texture, s.entries[i].token), nil)
         }
@@ -346,20 +346,23 @@ public final class MonitorTextureCache: @unchecked Sendable {
     let hit = locked { s -> ((MTLTexture, FrozenPlanes), (MTLTexture, FrozenPlanes))? in
       due = now - s.lastSweep >= interval && Self.hasIdle(s, now: now, life: life)
       if !due && now - s.lastSweep >= interval { s.lastSweep = now }
-      guard let a = Self.index(of: first, in: s.entries), Self.same(s.entries[a].surface, surface) else { return nil }
-      let adjacent = a + 1
+      let a = Self.index(of: first, in: s.entries)
+      let adjacent = a.map { $0 + 1 } ?? s.entries.count
       let b = adjacent < s.entries.count && s.entries[adjacent].key == second
         ? adjacent : Self.index(of: second, in: s.entries)
-      guard let b, Self.same(s.entries[b].surface, surface) else { return nil }
-      s.entries[a].lastUse = now
-      s.entries[b].lastUse = now
-      if s.entries[a].owner != owner { s.entries[a].owner = owner }
-      if s.entries[b].owner != owner { s.entries[b].owner = owner }
-      return ((s.entries[a].texture, s.entries[a].token), (s.entries[b].texture, s.entries[b].token))
+      // Touch a plane even on a partial hit: the fallback's first lookup may
+      // miss, and a due sweep must preserve the other plane.
+      func touch(_ index: Int?) -> (MTLTexture, FrozenPlanes)? {
+        guard let index, Self.same(s.entries[index].surface, surface) else { return nil }
+        s.entries[index].lastUse = max(s.entries[index].lastUse, now)
+        if s.entries[index].owner != owner { s.entries[index].owner = owner }
+        return (s.entries[index].texture, s.entries[index].token)
+      }
+      let luma = touch(a), chroma = touch(b)
+      guard let luma, let chroma else { return nil }
+      return (luma, chroma)
     }
-    // A partial miss falls through to entry(), whose lookup touches that plane
-    // before sweeping; do not discard it before the ordinary path can reuse it.
-    if due, hit != nil { sweep(now: now) }
+    if due { sweep(now: now) }
     return hit
   }
 
@@ -374,7 +377,8 @@ public final class MonitorTextureCache: @unchecked Sendable {
       due = now - s.lastSweep >= interval && Self.hasIdle(s, now: now, life: life)
       if !due && now - s.lastSweep >= interval { s.lastSweep = now }
       guard let i = Self.index(of: key, in: s.entries), Self.same(s.entries[i].surface, surface) else { return nil }
-      s.entries[i].lastUse = now
+      // A lookup with an earlier timestamp can acquire the lock after a newer lookup.
+      s.entries[i].lastUse = max(s.entries[i].lastUse, now)
       if s.entries[i].owner != owner { s.entries[i].owner = owner }
       return (s.entries[i].texture, s.entries[i].token)
     }

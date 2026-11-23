@@ -248,6 +248,8 @@ struct MeterFrame {
     /// Whether the window has reported an occlusion change. Until it has, its
     /// state can read "not visible" for a window on screen (as `MonitorMetalView` finds).
     private var occlusionReported = false
+  #else
+    private let ancestorVisibility = AncestorVisibility()
   #endif
 
   override init(frame: CGRect) {
@@ -322,7 +324,7 @@ struct MeterFrame {
       guard let window, !isHiddenOrHasHiddenAncestor else { return false }
       return !occlusionReported || window.occlusionState.contains(.visible)
     #else
-      return window != nil && !isHidden
+      return window != nil && !AncestorVisibility.isHidden(self)
     #endif
   }
 
@@ -398,8 +400,19 @@ struct MeterFrame {
       redraw()
     }
   #else
+    private func observeVisibility() {
+      ancestorVisibility.observe(self) { [weak self] in self?.updateLink() }
+    }
+
+    override func didMoveToSuperview() {
+      super.didMoveToSuperview()
+      observeVisibility()
+      updateLink()
+    }
+
     override func didMoveToWindow() {
       super.didMoveToWindow()
+      observeVisibility()
       updateLink()
       redraw()
     }

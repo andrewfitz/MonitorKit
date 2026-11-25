@@ -428,8 +428,7 @@ public struct DisplayAdjustmentControls: View {
 
   static let temperatureStep = 50.0
 
-  /// The slider's grid misses D65 (6504 K): a value within half a step of it is
-  /// stored as D65 exactly, so dragging back to the middle removes the trim.
+  /// Snap within half a step so off-grid presets can step back to neutral daylight.
   static func temperatureBinding(_ temperature: Binding<Double>, step: Double) -> Binding<Double> {
     Binding(
       get: { temperature.wrappedValue },

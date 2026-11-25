@@ -104,17 +104,16 @@ public enum HDRToSDR {
 /// 6504 K, which is D65), scaled so the largest is 1: like a display, which cannot
 /// drive a channel past full, the trim never clips white.
 public enum WhitePointTrim {
-  /// D65's correlated colour temperature on the daylight locus (6500 K with the
-  /// 1968 radiation constant c2 = 1.4388e-2, CIE 15:2004 §3.1): no trim.
-  public static let d65Temperature = 6504.0
+  /// Nominal daylight temperature used by display controls and saved settings.
+  public static let d65Temperature = 6500.0
+  /// D65's correlated temperature for the CIE daylight-locus calculation.
+  static let d65LocusTemperature = 6504.0
+  static let neutralTemperatures = d65Temperature...d65LocusTemperature
   public static let temperatureRange = 4000.0...10_000.0
   public static let tintRange = -0.02...0.02
 
   /// `temperature`, or exactly `d65Temperature` when it lies within `tolerance`
-  /// kelvin of it. D65's 6504 K is on no round-number grid, so a control stepping
-  /// through it (a 50 K slider lands on 6500 K) would leave a small trim on
-  /// (`DisplayAdjustments.trimsWhitePoint` compares exactly); snapping within half
-  /// the control's step lets it reach "no trim". Not finite: returned unchanged.
+  /// kelvin of it. Controls can use half their step to snap to neutral.
   public static func snappedToD65(_ temperature: Double, within tolerance: Double) -> Double {
     abs(temperature - d65Temperature) <= tolerance ? d65Temperature : temperature
   }
@@ -143,7 +142,14 @@ public enum WhitePointTrim {
   public static func white(temperature: Double, tint: Double) -> Chromaticity {
     // Evaluate both the white and its tangent at the same clamped temperature.
     // Outside the locus domain, two clamped neighbours otherwise coincide.
-    let temperature = min(25_000, max(4000, temperature))
+    var temperature = min(25_000, max(4000, temperature))
+    // Both the nominal and legacy D65 settings are neutral. Interpolate from
+    // the adjacent 6450 K slider stop so fine adjustments approach D65 smoothly.
+    let warmStop = d65Temperature - 50
+    if temperature > warmStop && temperature < d65LocusTemperature {
+      let fraction = min(1, (temperature - warmStop) / (d65Temperature - warmStop))
+      temperature = warmStop + fraction * (d65LocusTemperature - warmStop)
+    }
     let w = daylight(temperature)
     guard tint != 0 else { return w }
     // The locus's unit normal in uv, pointing above it (to green: v grows).
@@ -158,13 +164,13 @@ public enum WhitePointTrim {
 
   /// The linear-light gains in `primaries`; (1, 1, 1) without a trim.
   public static func gains(temperature: Double, tint: Double, primaries: ColorPrimaries) -> ColorRGB {
-    guard temperature != d65Temperature || tint != 0 else { return ColorRGB(r: 1, g: 1, b: 1) }
+    guard !neutralTemperatures.contains(temperature) || tint != 0 else { return ColorRGB(r: 1, g: 1, b: 1) }
     let toRGB = primaries.fromXYZ
     func rgb(_ c: Chromaticity) -> ColorRGB {
       let v = c.xyz
       return toRGB.apply(ColorRGB(r: v.x, g: v.y, b: v.z))
     }
-    let trimmed = rgb(white(temperature: temperature, tint: tint)), white = rgb(daylight(d65Temperature))
+    let trimmed = rgb(white(temperature: temperature, tint: tint)), white = rgb(daylight(d65LocusTemperature))
     let g = ColorRGB(
       r: max(trimmed.r / white.r, 1e-6), g: max(trimmed.g / white.g, 1e-6), b: max(trimmed.b / white.b, 1e-6))
     let m = max(g.r, g.g, g.b)

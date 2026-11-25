@@ -259,7 +259,9 @@ Applied after the monitor LUT, monitor-only. Any burn-in LUT, or a monitor LUT t
 
 ### 5.3 White-point trim (`WhitePointTrim`, `DisplayAdjustments.temperature/tint`)
 
-The trimmed white is on the CIE daylight locus at the temperature (CIE15 §3.1 eqs 3.3 and 3.4, 4000–25000 K; the control allows 4000–10000 K, default 6504 K = D65 with c2 = 1.4388e−2), offset by tint along the locus normal in CIE 1960 uv (ANSI C78.377 Duv, positive is greener, ±0.02). Gains are RGB(trimmed white)/RGB(daylight at 6504 K) in the picture primaries, normalized so the largest is 1, and applied in linear display light after brightness, contrast and saturation (directly on the signal for BT.1886, gamma 2.2 and linear pictures, where a power law makes that exact). The locus at 6504 K is (0.31271, 0.32912), within 1e−4 of tabulated D65. verified: `ColorPipelineRegressionTests.testDaylightLocusAndTrimmedWhite`, `testWhiteTrimGainsMoveWhiteToTheTrimmedWhite`, `testWhiteTrimIsAGainInLinearLight`. It costs nothing when off.
+The trimmed white is on the CIE daylight locus at the temperature (CIE15 §3.1 eqs 3.3 and 3.4, 4000–25000 K; the control allows 4000–10000 K, default 6500 K denotes D65, evaluated on the locus at 6504 K with c2 = 1.4388e−2), offset by tint along the locus normal in CIE 1960 uv (ANSI C78.377 Duv, positive is greener, ±0.02). Gains are RGB(trimmed white)/RGB(daylight at 6504 K) in the picture primaries, normalized so the largest is 1, and applied in linear display light after brightness, contrast and saturation (directly on the signal for BT.1886, gamma 2.2 and linear pictures, where a power law makes that exact). The locus at 6504 K is (0.31271, 0.32912), within 1e−4 of tabulated D65. verified: `ColorPipelineRegressionTests.testDaylightLocusAndTrimmedWhite`, `testWhiteTrimGainsMoveWhiteToTheTrimmedWhite`, `testWhiteTrimIsAGainInLinearLight`. It costs nothing when off.
+
+For fine adjustments between slider stops, 6450–6500 K maps linearly to 6450–6504 K on the locus. Settings from 6500 K through the former neutral value of 6504 K share the D65 white point. Every other slider stop uses its stated locus temperature.
 
 ### 5.4 Shader precision rule
 

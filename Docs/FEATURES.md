@@ -279,7 +279,7 @@ Follows: Video Assist Brightness, Contrast, Saturation and LCD temperature and t
 | `brightness` | 0 | −1…1 | Added to every channel |
 | `contrast` | 1 | 0…2 | Gain about mid-grey (0.5) |
 | `saturation` | 1 | 0…2 | 0 greyscale, 2 doubled |
-| `temperature` | 6504 K | 4000…10 000 K | White-point trim: the white is moved to this point on the CIE daylight locus (6504 K is D65, no trim) |
+| `temperature` | 6500 K | 4000…10 000 K | White-point trim: the white is moved to this point on the CIE daylight locus (6500 K is neutral daylight, D65) |
 | `tint` | 0 | −0.02…0.02 | Δuv off the locus (CIE 1960 uv, ANSI C78.377 sign: positive greener) |
 | `monochrome` | `.off` | `.off`, `.luma`, `.blueOnly` | Section 4.3 |
 

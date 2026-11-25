@@ -449,9 +449,16 @@ public struct DisplayAdjustments: Codable, Equatable, Sendable {
   /// 0 is greyscale, 1 unchanged, 2 doubled.
   public var saturation = 1.0
   /// White-point trim: the correlated colour temperature of the white the picture's
-  /// white is moved to, in kelvin on the CIE daylight locus, 4000…10 000. 6504 (D65)
+  /// white is moved to, in kelvin on the CIE daylight locus, 4000…10 000. 6500 (D65)
   /// is no trim (`WhitePointTrim`).
-  public var temperature = WhitePointTrim.d65Temperature
+  public var temperature: Double {
+    get { storedTemperature }
+    set {
+      // Older presets and clients use D65's locus temperature for neutral.
+      storedTemperature = newValue == WhitePointTrim.d65LocusTemperature ? WhitePointTrim.d65Temperature : newValue
+    }
+  }
+  private var storedTemperature = WhitePointTrim.d65Temperature
   /// White-point trim off the daylight locus, as the CIE 1960 Δuv of the trimmed
   /// white, -0.02…0.02: positive is greener (above the locus), negative more
   /// magenta (ANSI C78.377's Duv sign). 0 is no trim.
@@ -465,9 +472,12 @@ public struct DisplayAdjustments: Codable, Equatable, Sendable {
     brightness == 0 && contrast == 1 && saturation == 1 && monochrome == .off && !trimsWhitePoint
   }
   /// Whether the white-point trim moves the white.
-  public var trimsWhitePoint: Bool { temperature != WhitePointTrim.d65Temperature || tint != 0 }
+  public var trimsWhitePoint: Bool { !WhitePointTrim.neutralTemperatures.contains(temperature) || tint != 0 }
 
-  private enum CodingKeys: String, CodingKey { case brightness, contrast, saturation, monochrome, temperature, tint }
+  private enum CodingKeys: String, CodingKey {
+    case brightness, contrast, saturation, monochrome, tint
+    case storedTemperature = "temperature"
+  }
   public init(from decoder: Decoder) throws {
     self.init()
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -475,7 +485,7 @@ public struct DisplayAdjustments: Codable, Equatable, Sendable {
     contrast = c.lenient(.contrast, contrast)
     saturation = c.lenient(.saturation, saturation)
     monochrome = c.lenient(.monochrome, monochrome)
-    temperature = c.lenient(.temperature, temperature)
+    temperature = c.lenient(.storedTemperature, temperature)
     tint = c.lenient(.tint, tint)
   }
 }

@@ -223,6 +223,7 @@ final class ColorPipelineRegressionTests: XCTestCase {
     // 6504 K on the daylight locus is D65 (CIE 15:2004 Table T.3: 0.31272, 0.32903),
     // to the 1e-4 the locus polynomials reproduce the tabulated illuminants.
     let d65 = WhitePointTrim.daylight(6504)
+    XCTAssertEqual(WhitePointTrim.white(temperature: 6500, tint: 0), d65)
     XCTAssertEqual(d65.x, 0.31272, accuracy: 2e-5)
     XCTAssertEqual(d65.y, 0.32903, accuracy: 1e-4)
     // D50 (5003 K): 0.34567, 0.35850; D93-ish 9300 K is bluer.
@@ -254,7 +255,7 @@ final class ColorPipelineRegressionTests: XCTestCase {
         let target = WhitePointTrim.white(temperature: t, tint: tint)
         // Relative to the untrimmed white: RP 177 white is D65 (0.3127, 0.3290), the
         // locus's 6504 K is 2e-5 away, so compare with that offset removed.
-        let d65 = WhitePointTrim.daylight(WhitePointTrim.d65Temperature)
+        let d65 = WhitePointTrim.white(temperature: WhitePointTrim.d65Temperature, tint: 0)
         XCTAssertEqual(xyz.r / sum - (target.x - d65.x), 0.3127, accuracy: 3e-4, "\(primaries) \(t) \(tint)")
         XCTAssertEqual(xyz.g / sum - (target.y - d65.y), 0.3290, accuracy: 3e-4, "\(primaries) \(t) \(tint)")
       }
@@ -265,6 +266,24 @@ final class ColorPipelineRegressionTests: XCTestCase {
     let cool = WhitePointTrim.gains(temperature: 9300, tint: 0, primaries: .rec709)
     XCTAssertEqual(cool.b, 1)
     XCTAssertGreaterThan(WhitePointTrim.gains(temperature: 6504, tint: 0.01, primaries: .rec709).g, 0.999)
+  }
+
+  func testTemperatureIncreasesMonotonicallyThroughNominalAndLegacyDaylight() {
+    var display = DisplayAdjustments()
+    var previous = WhitePointTrim.white(temperature: 6449, tint: 0)
+    for kelvin in 6450...6550 {
+      let temperature = Double(kelvin)
+      let white = WhitePointTrim.white(temperature: temperature, tint: 0)
+      XCTAssertLessThanOrEqual(white.x, previous.x, "\(kelvin) K must not get warmer")
+      previous = white
+      display.temperature = temperature
+      let gains = WhitePointTrim.gains(temperature: temperature, tint: 0, primaries: .rec709)
+      XCTAssertEqual(WhitePointTrim.gains(display, primaries: .rec709), gains)
+      XCTAssertEqual(display.isIdentity, gains == ColorRGB(r: 1, g: 1, b: 1))
+    }
+    for stop in [6450.0, 6550] {
+      XCTAssertEqual(WhitePointTrim.white(temperature: stop, tint: 0), WhitePointTrim.daylight(stop))
+    }
   }
 
   /// `whiteTrimmed` is a gain in linear display light in every picture transfer
@@ -295,6 +314,7 @@ final class ColorPipelineRegressionTests: XCTestCase {
 
   func testTemperatureAndTintDecodeLenientlyAndNormalize() throws {
     var d = DisplayAdjustments()
+    XCTAssertEqual(d.temperature, 6500)
     XCTAssertTrue(d.isIdentity)
     d.temperature = 5600
     XCTAssertFalse(d.isIdentity)
@@ -308,6 +328,10 @@ final class ColorPipelineRegressionTests: XCTestCase {
     let old = try JSONDecoder().decode(DisplayAdjustments.self, from: Data(#"{"brightness":0.1}"#.utf8))
     XCTAssertEqual(old.temperature, WhitePointTrim.d65Temperature)
     XCTAssertEqual(old.tint, 0)
+    let legacy = try JSONDecoder().decode(DisplayAdjustments.self, from: Data(#"{"temperature":6504}"#.utf8))
+    XCTAssertEqual(legacy, DisplayAdjustments())
+    let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+    XCTAssertEqual(saved["temperature"] as? Double, 6500)
     let junk = try JSONDecoder().decode(DisplayAdjustments.self, from: Data(#"{"temperature":"warm","tint":[1]}"#.utf8))
     XCTAssertTrue(junk.isIdentity)
     var state = MonitorState()
